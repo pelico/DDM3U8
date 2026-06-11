@@ -1,0 +1,553 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>DDM3U8 下载器</title>
+    <style>
+        :root {
+            --bg-start: #eef2ff;
+            --bg-end: #f8fafc;
+            --primary: #4f46e5;
+            --primary-dark: #4338ca;
+            --success: #059669;
+            --warning: #d97706;
+            --danger: #dc2626;
+            --text: #111827;
+            --muted: #6b7280;
+            --border: #e5e7eb;
+            --surface: rgba(255, 255, 255, 0.92);
+            --shadow: 0 18px 50px rgba(15, 23, 42, 0.10);
+        }
+        * { box-sizing: border-box; }
+        body {
+            font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", "PingFang SC", "Helvetica Neue", Arial, sans-serif;
+            padding: 28px 18px;
+            min-height: 100vh;
+            color: var(--text);
+            margin: 0;
+            background:
+                radial-gradient(circle at 12% 12%, rgba(79, 70, 229, 0.18), transparent 30%),
+                radial-gradient(circle at 88% 8%, rgba(14, 165, 233, 0.16), transparent 28%),
+                linear-gradient(135deg, var(--bg-start) 0%, var(--bg-end) 58%, #ecfeff 100%);
+            letter-spacing: -0.01em;
+        }
+        .container { max-width: 960px; margin: 0 auto; }
+        .logo-section { text-align: center; margin-bottom: 28px; }
+        .logo-title { font-size: 31px; font-weight: 800; color: #172554; text-shadow: 0 1px 0 rgba(255,255,255,0.6); display: flex; align-items: center; justify-content: center; gap: 12px; }
+        .logo-icon { font-size: 34px; filter: drop-shadow(0 8px 14px rgba(79, 70, 229, 0.25)); }
+        .logo-subtitle { margin-top: 8px; font-size: 13px; color: #64748b; }
+        .card { background: var(--surface); backdrop-filter: blur(16px); padding: 24px; border-radius: 18px; margin-bottom: 18px; border: 1px solid rgba(255,255,255,0.72); box-shadow: var(--shadow); transition: transform 0.18s ease, box-shadow 0.18s ease; }
+        .card:hover { transform: translateY(-1px); box-shadow: 0 22px 60px rgba(15, 23, 42, 0.13); }
+        .card-header { display: flex; justify-content: space-between; align-items: center; gap: 14px; margin-bottom: 18px; padding-bottom: 14px; border-bottom: 1px solid rgba(226,232,240,0.9); }
+        h2 { margin: 0 0 16px 0; font-size: 18px; font-weight: 750; color: #0f172a; }
+        h3 { margin: 0 0 16px 0; font-size: 16px; font-weight: 720; color: #1e293b; }
+        .input-group { display: flex; gap: 12px; margin-bottom: 12px; }
+        .input-group input, .input-full {
+            width: 100%;
+            padding: 13px 15px;
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            font-size: 14px;
+            line-height: 1.45;
+            outline: none;
+            background: rgba(248, 250, 252, 0.92);
+            color: var(--text);
+            transition: border-color 0.18s, box-shadow 0.18s, background 0.18s;
+        }
+        .input-group input { flex: 1; }
+        .input-full { margin-bottom: 14px; }
+        .input-group input:focus, .input-full:focus { border-color: #818cf8; box-shadow: 0 0 0 4px rgba(79, 70, 229, 0.12); background: #fff; }
+        .input-group input::placeholder, .input-full::placeholder { color: #94a3b8; }
+        .btn { padding: 11px 18px; border: none; border-radius: 12px; font-size: 14px; font-weight: 700; cursor: pointer; transition: transform 0.16s ease, box-shadow 0.16s ease, filter 0.16s ease, opacity 0.16s ease; display: inline-flex; align-items: center; justify-content: center; gap: 6px; white-space: nowrap; }
+        .btn:hover { transform: translateY(-1px); filter: brightness(1.02); }
+        .btn:active { transform: translateY(0); }
+        .btn:disabled { cursor: not-allowed; opacity: 0.58; transform: none; box-shadow: none; }
+        .btn-main { background: linear-gradient(135deg, var(--primary) 0%, #7c3aed 100%); color: white; box-shadow: 0 10px 22px rgba(79, 70, 229, 0.24); }
+        .btn-success { background: linear-gradient(135deg, #10b981 0%, var(--success) 100%); color: white; box-shadow: 0 10px 22px rgba(5, 150, 105, 0.22); }
+        .btn-warning { background: linear-gradient(135deg, #f59e0b 0%, var(--warning) 100%); color: white; box-shadow: 0 10px 22px rgba(217, 119, 6, 0.20); }
+        .btn-danger { background: linear-gradient(135deg, #ef4444 0%, var(--danger) 100%); color: white; box-shadow: 0 10px 22px rgba(220, 38, 38, 0.18); }
+        .btn-secondary { background: #f1f5f9; color: #334155; border: 1px solid #e2e8f0; }
+        .btn-sm { padding: 7px 11px; font-size: 12px; border-radius: 10px; }
+        .btn-group { display: flex; gap: 8px; flex-wrap: wrap; }
+        .table-container { overflow-x: auto; border-radius: 14px; border: 1px solid #edf2f7; background: white; }
+        table { width: 100%; border-collapse: collapse; }
+        th { text-align: left; background: #f8fafc; padding: 13px 12px; font-size: 12px; color: #64748b; font-weight: 750; border-bottom: 1px solid #e2e8f0; }
+        td { padding: 14px 12px; border-bottom: 1px solid #f1f5f9; font-size: 14px; vertical-align: middle; color: #1f2937; }
+        tr:last-child td { border-bottom: none; }
+        tr:hover td { background: #f8fafc; }
+        .action-col { width: 150px; }
+        .select-col { width: 42px; }
+        .progress-col { width: 230px; }
+        .checkbox { width: 17px; height: 17px; cursor: pointer; accent-color: var(--primary); transition: transform 0.18s; }
+        .checkbox:hover { transform: scale(1.08); }
+        .progress-bar { height: 7px; background: #e2e8f0; border-radius: 999px; overflow: hidden; margin-top: 6px; }
+        .progress-fill { height: 100%; background: linear-gradient(90deg, #4f46e5 0%, #06b6d4 100%); border-radius: 999px; transition: width 0.3s ease; }
+        .progress-text { font-family: "Cascadia Mono", "SF Mono", Consolas, monospace; font-size: 12px; color: #64748b; margin-top: 6px; line-height: 1.45; word-break: break-all; }
+        .status { display: inline-flex; align-items: center; padding: 5px 10px; border-radius: 999px; font-size: 12px; font-weight: 750; line-height: 1; border: 1px solid transparent; }
+        .status-running { background: #eff6ff; color: #1d4ed8; border-color: #bfdbfe; }
+        .status-pending { background: #fffbeb; color: #b45309; border-color: #fde68a; }
+        .status-done { background: #ecfdf5; color: #047857; border-color: #a7f3d0; }
+        .status-error { background: #fef2f2; color: #b91c1c; border-color: #fecaca; }
+        .status-merge { background: #f5f3ff; color: #6d28d9; border-color: #ddd6fe; }
+        .status-warn { background: #fff7ed; color: #c2410c; border-color: #fed7aa; }
+        .status-waiting { background: #eef2ff; color: #3730a3; border-color: #c7d2fe; }
+        .empty-state { text-align: center; padding: 44px 20px; color: #94a3b8; }
+        .empty-icon { font-size: 44px; margin-bottom: 10px; opacity: 0.55; }
+        .batch-bar { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 13px 14px; background: #f8fafc; border-radius: 14px; margin-bottom: 14px; border: 1px solid #e2e8f0; }
+        .batch-info { font-size: 13px; color: #475569; display: flex; align-items: center; gap: 16px; }
+        .batch-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+        .tool-card { background: linear-gradient(135deg, rgba(255,251,235,0.96) 0%, rgba(240,253,250,0.94) 100%); border: 1px solid #fde68a; }
+        .tool-card h3 { color: #92400e; }
+        .tool-card p { font-size: 13px; color: #a16207; }
+        .modal { display: none; position: fixed; z-index: 999; inset: 0; background-color: rgba(15, 23, 42, 0.42); backdrop-filter: blur(4px); }
+        .modal-content { background-color: #fff; margin: 10% auto; padding: 22px; border-radius: 18px; width: 88%; max-width: 470px; max-height: 70vh; overflow-y: auto; box-shadow: 0 24px 70px rgba(15, 23, 42, 0.24); }
+        .folder-item { padding: 12px 14px; border-bottom: 1px solid #f1f5f9; cursor: pointer; font-size: 13px; border-radius: 10px; color: #334155; }
+        .folder-item:hover { background-color: #ecfdf5; color: #047857; }
+        .close-btn { color: #94a3b8; float: right; font-size: 22px; font-weight: bold; cursor: pointer; line-height: 1; }
+        .close-btn:hover { color: #1f2937; }
+        #folderSelectBtn { background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 12px; padding: 12px 14px; color: #334155; font-size: 13px; width: 100%; cursor: pointer; text-align: left; transition: border-color 0.18s, background 0.18s; }
+        #folderSelectBtn:hover { background: #fff; border-color: #94a3b8; }
+        @media (max-width: 600px) {
+            body { padding: 18px 12px; }
+            .logo-title { font-size: 25px; }
+            .logo-subtitle { font-size: 12px; }
+            .card { padding: 18px; border-radius: 16px; }
+            .card-header { align-items: flex-start; flex-direction: column; }
+            .input-group { flex-direction: column; }
+            .btn-group { flex-wrap: wrap; }
+            thead { display: none; }
+            tr { display: block; border-bottom: 1px solid #e2e8f0; padding: 12px 0; margin-bottom: 8px; }
+            td { display: block; border: none; padding: 5px 8px; }
+            td:nth-child(2) { font-weight: 700; font-size: 14px; color: #0f172a; }
+            td:nth-child(3) { margin-bottom: 6px; }
+            .progress-col { width: auto; }
+            .batch-bar { flex-direction: column; gap: 10px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="logo-section">
+            <div class="logo-title">
+                <span class="logo-icon">📥</span>
+                <span>DDM3U8 下载器</span>
+            </div>
+            <div class="logo-subtitle">轻量任务队列 · 断点恢复 · 本地缓存合并</div>
+        </div>
+        
+        <div class="card">
+            <h2>添加下载任务</h2>
+            <form id="downForm">
+                <div class="input-group">
+                    <input type="text" name="url" placeholder="粘贴 m3u8 链接" required>
+                    <input type="text" name="name" placeholder="视频名称" value="video" required>
+                </div>
+                <input type="text" class="input-full" name="referer" value="https://" placeholder="选填：全局 Referer">
+                <button type="submit" class="btn btn-main" style="width: 100%;">开始下载</button>
+            </form>
+        </div>
+
+        <div class="card tool-card">
+            <h3>🛠️ 本地缓存强制合并工具</h3>
+            <p style="font-size: 12px; color: #92400e; margin: 0 0 12px 0;">用于合并缓存文件夹ts文件，自动扫描并缝合碎片。</p>
+            <form id="localMergeForm">
+                <input type="hidden" id="folderInputHidden" name="folder_name" required>
+                <button type="button" id="folderSelectBtn" onclick="openFolderModal()">📁 浏览并选择缓存文件夹</button>
+                <button type="submit" class="btn btn-success" style="width: 100%; margin-top: 10px;">🔍 开始扫描并强制合并</button>
+            </form>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                <h3>📋 任务列表</h3>
+                <div style="display: flex; align-items: center; gap: 12px;">
+                    <span id="workerStatus" style="font-size: 12px; color: #6b7280;">运行中: 0/2</span>
+                    <button class="btn btn-secondary btn-sm" onclick="clearTasks()">清理记录</button>
+                </div>
+            </div>
+
+            <div id="batchBar" class="batch-bar" style="display: none;">
+                <div class="batch-info">
+                    <label><input type="checkbox" id="selectAll" onchange="toggleSelectAllFromBatch()" class="checkbox"> 全选</label>
+                    <span id="selectedCount">已选择 0 个</span>
+                </div>
+                <div class="batch-actions">
+                    <button class="btn btn-sm btn-main" onclick="batchResume()">▶ 恢复选中</button>
+                    <button class="btn btn-sm btn-warning" onclick="batchPause()">⏸ 暂停选中</button>
+                    <button class="btn btn-sm btn-danger" onclick="batchCancel()">✕ 取消选中</button>
+                </div>
+            </div>
+
+            <div class="table-container">
+                <table>
+                    <thead>
+                        <tr>
+                            <th class="select-col"><input type="checkbox" id="headerCheckbox" onchange="toggleSelectAll()" class="checkbox"></th>
+                            <th>任务/文件名</th>
+                            <th>状态</th>
+                            <th class="progress-col">进度</th>
+                            <th class="action-col">操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="taskList"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <div id="folderModal" class="modal">
+        <div class="modal-content">
+            <span class="close-btn" onclick="closeFolderModal()">&times;</span>
+            <h3 style="margin-top:0; padding-bottom:12px; border-bottom:2px solid #f3f4f6;">📁 选择缓存文件夹</h3>
+            <div id="folderList" style="margin-top:12px;">
+                <div style="text-align:center; padding:20px; color:#9ca3af;">正在加载...</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let selectedTasks = new Set();
+        let taskProgressCache = {};
+        let refreshInFlight = false;
+
+        function escapeHtml(value) {
+            return String(value ?? '').replace(/[&<>"']/g, function(ch) {
+                return {
+                    '&': '&amp;',
+                    '<': '&lt;',
+                    '>': '&gt;',
+                    '"': '&quot;',
+                    "'": '&#39;'
+                }[ch];
+            });
+        }
+
+        async function apiFetch(url, options = {}) {
+            const response = await fetch(url, options);
+            if (!response.ok) {
+                let message = `请求失败：${response.status}`;
+                try {
+                    const data = await response.json();
+                    message = data.error || message;
+                } catch (e) {
+                    try {
+                        const text = await response.text();
+                        if (text) message = text;
+                    } catch (_) {}
+                }
+                throw new Error(message);
+            }
+            return response;
+        }
+
+        async function manageTask(taskId, action) {
+            try {
+                await apiFetch(`/api/task/${encodeURIComponent(taskId)}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: action })
+                });
+                refreshTasks();
+            } catch (err) {
+                alert(err.message || '操作失败');
+            }
+        }
+
+        async function clearTasks() {
+            if(confirm('将清除所有非运行中的任务记录，确定？')) {
+                try {
+                    await apiFetch('/api/clear', { method: 'POST' });
+                    selectedTasks.clear();
+                    updateSelectedCount();
+                    refreshTasks();
+                } catch (err) {
+                    alert(err.message || '清理失败');
+                }
+            }
+        }
+
+        document.getElementById('downForm').onsubmit = async function(e) {
+            e.preventDefault();
+            const button = this.querySelector('button[type="submit"]');
+            button.disabled = true;
+            try {
+                await apiFetch('/down', { method: 'POST', body: new URLSearchParams(new FormData(this)) });
+                this.elements['url'].value = '';
+                refreshTasks();
+            } catch (err) {
+                alert(err.message || '创建下载任务失败');
+            } finally {
+                button.disabled = false;
+            }
+        };
+
+        document.getElementById('localMergeForm').onsubmit = async function(e) {
+            e.preventDefault();
+            const folderInput = document.getElementById('folderInputHidden');
+            if (!folderInput.value) {
+                alert('请先选择缓存文件夹');
+                return;
+            }
+            const button = this.querySelector('button[type="submit"]');
+            button.disabled = true;
+            try {
+                await apiFetch('/local_merge', { method: 'POST', body: new URLSearchParams(new FormData(this)) });
+                document.getElementById('folderSelectBtn').textContent = '📁 浏览并选择缓存文件夹';
+                folderInput.value = '';
+                refreshTasks();
+            } catch (err) {
+                alert(err.message || '创建本地合并任务失败');
+            } finally {
+                button.disabled = false;
+            }
+        };
+
+        function openFolderModal() {
+            document.getElementById('folderModal').style.display = 'block';
+            const folderList = document.getElementById('folderList');
+            folderList.innerHTML = '<div style="text-align:center; padding:20px; color:#9ca3af;">正在加载...</div>';
+            apiFetch('/api/folders')
+                .then(r => r.json())
+                .then(data => {
+                    folderList.innerHTML = '';
+                    if (!data.folders || data.folders.length === 0) {
+                        const empty = document.createElement('div');
+                        empty.style.cssText = 'text-align:center; color:#9ca3af; padding:20px;';
+                        empty.textContent = '/downloads 目录下没有找到任何文件夹';
+                        folderList.appendChild(empty);
+                        return;
+                    }
+                    data.folders.forEach(folder => {
+                        const item = document.createElement('div');
+                        item.className = 'folder-item';
+                        item.textContent = `📁 ${folder}`;
+                        item.onclick = () => selectFolder(folder);
+                        folderList.appendChild(item);
+                    });
+                })
+                .catch(err => {
+                    folderList.innerHTML = '';
+                    const error = document.createElement('div');
+                    error.style.cssText = 'text-align:center; color:#dc2626; padding:20px;';
+                    error.textContent = err.message || '获取文件夹列表失败';
+                    folderList.appendChild(error);
+                });
+        }
+
+        function closeFolderModal() {
+            document.getElementById('folderModal').style.display = 'none';
+        }
+
+        function selectFolder(folderName) {
+            document.getElementById('folderSelectBtn').textContent = `✅ 已选择: ${folderName}`;
+            document.getElementById('folderInputHidden').value = folderName;
+            closeFolderModal();
+        }
+
+        window.onclick = function(event) {
+            if (event.target == document.getElementById('folderModal')) closeFolderModal();
+        }
+
+        function getProgress(log) {
+            if (!log) return { percent: 0, text: '' };
+            const match = log.match(/(\d+(?:\.\d+)?)%/);
+            if (match) {
+                return { percent: parseFloat(match[1]), text: log };
+            }
+            return { percent: 0, text: log };
+        }
+
+        function toggleSelectAll() {
+            const headerCheckbox = document.getElementById('headerCheckbox');
+            const selectAllCheckbox = document.getElementById('selectAll');
+            const isChecked = headerCheckbox.checked;
+            selectAllCheckbox.checked = isChecked;
+            
+            document.querySelectorAll('.task-checkbox').forEach(cb => {
+                cb.checked = isChecked;
+                const taskId = cb.dataset.taskId;
+                if (isChecked) {
+                    selectedTasks.add(taskId);
+                } else {
+                    selectedTasks.delete(taskId);
+                }
+            });
+            updateSelectedCount();
+        }
+        
+        function toggleSelectAllFromBatch() {
+            const headerCheckbox = document.getElementById('headerCheckbox');
+            const selectAllCheckbox = document.getElementById('selectAll');
+            const isChecked = selectAllCheckbox.checked;
+            headerCheckbox.checked = isChecked;
+            
+            document.querySelectorAll('.task-checkbox').forEach(cb => {
+                cb.checked = isChecked;
+                const taskId = cb.dataset.taskId;
+                if (isChecked) {
+                    selectedTasks.add(taskId);
+                } else {
+                    selectedTasks.delete(taskId);
+                }
+            });
+            updateSelectedCount();
+        }
+
+        function toggleTaskSelect(taskId, checkbox) {
+            if (checkbox.checked) {
+                selectedTasks.add(taskId);
+            } else {
+                selectedTasks.delete(taskId);
+            }
+            updateSelectedCount();
+            const total = document.querySelectorAll('.task-checkbox').length;
+            const allChecked = total > 0 && total === selectedTasks.size;
+            document.getElementById('headerCheckbox').checked = allChecked;
+            document.getElementById('selectAll').checked = allChecked;
+        }
+
+        function updateSelectedCount() {
+            const count = selectedTasks.size;
+            document.getElementById('selectedCount').textContent = `已选择 ${count} 个`;
+            document.getElementById('batchBar').style.display = count > 0 ? 'flex' : 'none';
+        }
+
+        async function batchOperate(action, confirmText, errorText) {
+            if (selectedTasks.size === 0) return;
+            const taskIds = Array.from(selectedTasks);
+            if (confirm(confirmText(taskIds.length))) {
+                try {
+                    await Promise.all(taskIds.map(taskId => apiFetch(`/api/task/${encodeURIComponent(taskId)}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ action })
+                    })));
+                } catch (err) {
+                    alert(err.message || errorText);
+                }
+                selectedTasks.clear();
+                updateSelectedCount();
+                refreshTasks();
+            }
+        }
+
+        function batchPause() {
+            batchOperate('pause', count => `确定要暂停 ${count} 个任务吗？`, '批量暂停失败');
+        }
+
+        function batchResume() {
+            batchOperate('resume', count => `确定要恢复 ${count} 个任务吗？`, '批量恢复失败');
+        }
+
+        function batchCancel() {
+            batchOperate('cancel', count => `确定要取消 ${count} 个任务吗？`, '批量取消失败');
+        }
+
+        async function refreshTasks() {
+            if (refreshInFlight) return;
+            refreshInFlight = true;
+            try {
+                const response = await apiFetch('/api/tasks');
+                const data = await response.json();
+                document.getElementById('workerStatus').innerText = `运行中: ${data.active_workers}/${data.max_workers}`;
+                
+                const taskIds = Object.keys(data.tasks);
+                selectedTasks.forEach(taskId => {
+                    if (!taskIds.includes(taskId)) selectedTasks.delete(taskId);
+                });
+                
+                if (taskIds.length === 0) {
+                    document.getElementById('taskList').innerHTML = 
+                        '<tr><td colspan="5" class="empty-state"><div class="empty-icon">📋</div>暂无任务记录</td></tr>';
+                    document.getElementById('batchBar').style.display = 'none';
+                    selectedTasks.clear();
+                    return;
+                }
+
+                let html = '';
+                for (let id of taskIds) {
+                    let t = data.tasks[id];
+                    let progress = getProgress(t.log);
+                    const safeId = escapeHtml(id);
+                    const safeName = escapeHtml(t.name || '-');
+                    const safeStatus = escapeHtml(t.status || '-');
+                    const safeLog = escapeHtml(t.log || '-');
+                    
+                    if (t.status === '下载中' || t.status === '合并中') {
+                        taskProgressCache[id] = progress.percent;
+                    } else if (taskProgressCache[id] === undefined) {
+                        taskProgressCache[id] = progress.percent;
+                    }
+
+                    let displayPercent = taskProgressCache[id];
+                    let btns = '';
+                    let statusClass = '';
+                    displayPercent = Number.isFinite(displayPercent) ? displayPercent : 0;
+
+                    switch(t.status) {
+                        case '下载中':
+                            btns = `<div class="btn-group"><button class="btn btn-sm btn-warning" data-task-id="${safeId}" onclick="manageTask(this.dataset.taskId,'pause')">暂停</button><button class="btn btn-sm btn-danger" data-task-id="${safeId}" onclick="manageTask(this.dataset.taskId,'cancel')">取消</button></div>`;
+                            statusClass = 'status-running';
+                            break;
+                        case '排队中':
+                            btns = `<button class="btn btn-sm btn-danger" data-task-id="${safeId}" onclick="manageTask(this.dataset.taskId,'cancel')">取消</button>`;
+                            statusClass = 'status-pending';
+                            break;
+                        case '等待FFmpeg':
+                            btns = `<span style="font-size:11px;color:#6366f1;">等待中...</span>`;
+                            statusClass = 'status-waiting';
+                            break;
+                        case '合并中':
+                            btns = `<span style="font-size:11px;color:#7c3aed;">执行中...</span>`;
+                            statusClass = 'status-merge';
+                            break;
+                        case '已完成':
+                            displayPercent = 100;
+                            statusClass = 'status-done';
+                            break;
+                        case '完成(强合)':
+                            displayPercent = 100;
+                            statusClass = 'status-warn';
+                            break;
+                        case '已暂停':
+                        case '已中断':
+                        case '已取消':
+                        case '错误':
+                            if (t.cmd) {
+                                btns = `<div class="btn-group"><button class="btn btn-sm btn-main" data-task-id="${safeId}" onclick="manageTask(this.dataset.taskId,'resume')">恢复</button><button class="btn btn-sm btn-success" data-task-id="${safeId}" onclick="manageTask(this.dataset.taskId,'merge')">强合</button></div>`;
+                            } else {
+                                btns = `<button class="btn btn-sm btn-success" data-task-id="${safeId}" onclick="manageTask(this.dataset.taskId,'merge')">重试合并</button>`;
+                            }
+                            statusClass = t.status === '已取消' ? 'status-error' : 'status-error';
+                            break;
+                        default:
+                            statusClass = 'status-error';
+                    }
+
+                    html += `
+                    <tr>
+                        <td><input type="checkbox" class="task-checkbox" data-task-id="${safeId}" onchange="toggleTaskSelect(this.dataset.taskId, this)" ${selectedTasks.has(id) ? 'checked' : ''}></td>
+                        <td title="${safeName}">${safeName}</td>
+                        <td><span class="status ${statusClass}">${safeStatus}</span></td>
+                        <td>
+                            <div class="progress-bar"><div class="progress-fill" style="width:${Math.min(displayPercent, 100)}%"></div></div>
+                            <div class="progress-text">${safeLog}</div>
+                        </td>
+                        <td>${btns}</td>
+                    </tr>`;
+                }
+                document.getElementById('taskList').innerHTML = html;
+                updateSelectedCount();
+            } catch (err) {
+                document.getElementById('workerStatus').innerText = '连接异常，正在重试';
+            } finally {
+                refreshInFlight = false;
+            }
+        }
+
+        refreshTasks();
+        setInterval(refreshTasks, 2000);
+    </script>
+</body>
+</html>
