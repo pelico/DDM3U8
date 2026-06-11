@@ -26,6 +26,7 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger('DDM3U8')
+logging.getLogger('werkzeug').setLevel(logging.ERROR)
 
 # ================= 全局配置 (从环境变量读取) =================
 CONFIG = {
