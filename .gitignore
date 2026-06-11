@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Runtime files
+Logs/
+tasks_history.json
+*.log
+
+# Local environment
+.env
+.venv/
+venv/
+
+# Local binaries and temporary files
+N_m3u8DL-RE
+N_m3u8DL-RE*.tar.gz
+tmp/
+temp/
+
+# IDE
+.idea/
+.vscode/
+
+# System files
+.DS_Store
+Thumbs.db
