@@ -9,6 +9,7 @@ DDM3U8 是一个轻量的 Web M3U8 下载工具，基于 Flask 和 N_m3u8DL-RE�
 - 合并工具：`ffmpeg`
 - 支持架构：`linux/amd64`、`linux/arm64`
 - 不支持：`armv7l`
+<img width="1479" height="1300" alt="image" src="https://github.com/user-attachments/assets/e33d424b-e709-46fd-a2f3-d36fba1b8088" />
 
 ## 功能
 
