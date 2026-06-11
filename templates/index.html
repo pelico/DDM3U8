@@ -210,6 +210,9 @@
         let selectedTasks = new Set();
         let taskProgressCache = {};
         let refreshInFlight = false;
+        let refreshTimer = null;
+        const ACTIVE_REFRESH_INTERVAL = 2000;
+        const IDLE_REFRESH_INTERVAL = 10000;
 
         function escapeHtml(value) {
             return String(value ?? '').replace(/[&<>"']/g, function(ch) {
@@ -445,14 +448,21 @@
         }
 
         async function refreshTasks() {
-            if (refreshInFlight) return;
+            if (refreshInFlight || document.hidden) return;
+            if (refreshTimer) {
+                clearTimeout(refreshTimer);
+                refreshTimer = null;
+            }
             refreshInFlight = true;
+            let nextRefreshDelay = IDLE_REFRESH_INTERVAL;
             try {
                 const response = await apiFetch('/api/tasks');
                 const data = await response.json();
                 document.getElementById('workerStatus').innerText = `运行中: ${data.active_workers}/${data.max_workers}`;
                 
                 const taskIds = Object.keys(data.tasks);
+                const hasActiveTask = taskIds.some(id => ['排队中', '下载中', '合并中', '等待FFmpeg'].includes(data.tasks[id].status));
+                nextRefreshDelay = hasActiveTask ? ACTIVE_REFRESH_INTERVAL : IDLE_REFRESH_INTERVAL;
                 selectedTasks.forEach(taskId => {
                     if (!taskIds.includes(taskId)) selectedTasks.delete(taskId);
                 });
@@ -543,11 +553,36 @@
                 document.getElementById('workerStatus').innerText = '连接异常，正在重试';
             } finally {
                 refreshInFlight = false;
+                scheduleRefresh(nextRefreshDelay);
             }
         }
 
-        refreshTasks();
-        setInterval(refreshTasks, 2000);
+        function scheduleRefresh(delay) {
+            if (document.hidden) return;
+            if (refreshTimer) clearTimeout(refreshTimer);
+            refreshTimer = setTimeout(refreshTasks, delay);
+        }
+
+        function refreshNow() {
+            if (refreshTimer) {
+                clearTimeout(refreshTimer);
+                refreshTimer = null;
+            }
+            refreshTasks();
+        }
+
+        document.addEventListener('visibilitychange', function() {
+            if (document.hidden) {
+                if (refreshTimer) {
+                    clearTimeout(refreshTimer);
+                    refreshTimer = null;
+                }
+            } else {
+                refreshNow();
+            }
+        });
+
+        refreshNow();
     </script>
 </body>
 </html>
