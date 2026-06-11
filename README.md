@@ -17,11 +17,7 @@ DDM3U8 是一个轻量的 Web M3U8 下载工具，基于 Flask 和 N_m3u8DL-RE�
 - 支持 Basic Auth 访问保护
 - 支持并发下载数量限制
 - 下载任务状态自动刷新
-- 支持 `/downloads` 持久化保存
-- 支持重启后恢复历史任务记录
-- 内置 `/health` 和 `/ready` 探针
-- 镜像内置 `ffmpeg`
-- 镜像构建时从 `vendor/` 选择对应架构的 `N_m3u8DL-RE`
+- 支持 `/downloads` 保存视频。
 
 ## 目录结构
 
@@ -42,19 +38,18 @@ DDM3U8 是一个轻量的 Web M3U8 下载工具，基于 Flask 和 N_m3u8DL-RE�
 `vendor/` 目录必须保留。Docker 构建时会根据目标架构选择对应的 N_m3u8DL-RE 包。
 
 ## 快速运行
-
-如果你已经有镜像，可以直接运行：
+docker pull ghcr.io/pelico/ddm3u8:latest
 
 ```bash
 docker run -d \
   --name ddm3u8 \
   -p 8080:8080 \
-  -v /volume1/docker/dd3/downloads:/downloads \
+  -v ./downloads:/downloads \
   -e TZ=Asia/Shanghai \
   -e WEB_USER=admin \
   -e WEB_PASS=admin \
   --restart unless-stopped \
-  ghcr.io/你的GitHub用户名/ddm3u8:latest
+  ghcr.io/pelico/ddm3u8:latest
 ```
 
 浏览器访问：
@@ -104,8 +99,7 @@ docker logs -f ddm3u8
 默认发布到 GitHub Container Registry：
 
 ```text
-ghcr.io/你的GitHub用户名/ddm3u8:latest
-ghcr.io/你的GitHub用户名/ddm3u8:v0.1.0
+ghcr.io/pelico/ddm3u8:latest
 ```
 
 支持平台：
@@ -114,8 +108,6 @@ ghcr.io/你的GitHub用户名/ddm3u8:v0.1.0
 linux/amd64
 linux/arm64
 ```
-
-首次发布后，如果镜像无法公开拉取，需要到 GitHub 仓库的 Packages 页面，把容器包可见性改成 Public。
 
 ## 环境变量
 
@@ -158,25 +150,9 @@ docker run -d \
   -e WEB_USER=admin \
   -e WEB_PASS=请改成强密码 \
   --restart unless-stopped \
-  ghcr.io/你的GitHub用户名/ddm3u8:latest
+  ghcr.io/pelico/ddm3u8:latest
 ```
 
-更新镜像：
-
-```bash
-docker pull ghcr.io/你的GitHub用户名/ddm3u8:latest
-docker stop ddm3u8
-docker rm ddm3u8
-docker run -d \
-  --name ddm3u8 \
-  -p 8080:8080 \
-  -v /volume1/docker/dd3/downloads:/downloads \
-  -e TZ=Asia/Shanghai \
-  -e WEB_USER=admin \
-  -e WEB_PASS=请改成强密码 \
-  --restart unless-stopped \
-  ghcr.io/你的GitHub用户名/ddm3u8:latest
-```
 
 ## 注意事项
 
