@@ -19,26 +19,17 @@ DDM3U8 是一个轻量的 Web M3U8 下载工具，基于 Flask 和 N_m3u8DL-RE�
 - 下载任务状态自动刷新
 - 支持 `/downloads` 保存视频。
 
-## 目录结构
-
-```text
-.
-├── Dockerfile
-├── entrypoint.sh
-├── main.py
-├── requirements.txt
-├── templates/
-│   └── index.html
-├── vendor/
-│   ├── N_m3u8DL-RE_v0.5.1-beta_linux-musl-arm64_20251029.tar.gz
-│   └── N_m3u8DL-RE_v0.5.1-beta_linux-musl-x64_20251029.tar.gz
-└── .env.example
-```
-
-`vendor/` 目录必须保留。Docker 构建时会根据目标架构选择对应的 N_m3u8DL-RE 包。
 
 ## 快速运行
 docker pull ghcr.io/pelico/ddm3u8:latest
+
+直接拉取镜像速度很慢，可以试试。
+ghcr.io
+替换为
+ghcr.nju.edu.cn
+
+docker pull ghcr.nju.edu.cn/pelico/ddm3u8:latest
+
 
 ```bash
 docker run -d \
@@ -60,54 +51,12 @@ http://你的服务器IP:8080/
 
 如果设置了 `WEB_USER` 和 `WEB_PASS`，浏览器会弹出登录框。
 
-## 本地构建
-
-在普通 x86_64 NAS 或服务器上，可以使用传统 Docker 构建：
-
-```bash
-docker build -t ddm3u8:test .
-```
-
-运行：
-
-```bash
-docker run -d \
-  --name ddm3u8 \
-  -p 8080:8080 \
-  -v /volume1/docker/dd3/downloads:/downloads \
-  -e TZ=Asia/Shanghai \
-  -e WEB_USER=admin \
-  -e WEB_PASS=admin \
-  --restart unless-stopped \
-  ddm3u8:test
-```
-
 查看日志：
 
 ```bash
 docker logs -f ddm3u8
 ```
 
-## 多架构发布
-
-项目内置 GitHub Actions 工作流，会在以下情况构建并发布镜像：
-
-- 推送到 `main` 分支
-- 推送版本标签，例如 `v0.1.0`
-- 在 GitHub 页面手动运行工作流
-
-默认发布到 GitHub Container Registry：
-
-```text
-ghcr.io/pelico/ddm3u8:latest
-```
-
-支持平台：
-
-```text
-linux/amd64
-linux/arm64
-```
 
 ## 环境变量
 
@@ -138,20 +87,6 @@ curl -u admin:admin http://localhost:8080/ready
 ```
 
 `/ready` 会返回 ffmpeg、N_m3u8DL-RE、下载目录、任务记录加载状态。
-
-## 群晖部署示例
-
-```bash
-docker run -d \
-  --name ddm3u8 \
-  -p 8080:8080 \
-  -v /volume1/docker/dd3/downloads:/downloads \
-  -e TZ=Asia/Shanghai \
-  -e WEB_USER=admin \
-  -e WEB_PASS=请改成强密码 \
-  --restart unless-stopped \
-  ghcr.io/pelico/ddm3u8:latest
-```
 
 
 ## 注意事项
