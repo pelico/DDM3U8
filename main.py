@@ -47,12 +47,27 @@ GLOBAL_REFERER = ""
 tasks = {}
 
 app = Flask(__name__)
+app.json.sort_keys = False
+
+ACTIVE_TASK_STATUSES = {'排队中', '下载中', '合并中', '等待FFmpeg'}
 
 def log_info(msg):
     logger.info(msg)
 
 def log_error(msg):
     logger.error(msg)
+
+
+def extract_m3u8_urls(text):
+    pattern = re.compile(r'https?://(?:(?!https?://).)*?\.m3u8(?:\?(?:(?!https?://)[^\s<>"\'])*)?', re.IGNORECASE)
+    urls = []
+    seen = set()
+    for match in pattern.finditer(text or ''):
+        url = match.group(0).strip().rstrip('.,;，。；')
+        if url and url not in seen:
+            seen.add(url)
+            urls.append(url)
+    return urls
 
 # ================= Basic Auth 装饰器 =================
 def requires_auth(f):
@@ -416,7 +431,17 @@ def index():
 def get_tasks():
     with TASK_LOCK:
         active_workers = sum(1 for t in tasks.values() if t['status'] in ['下载中', '合并中'])
-        data = {"tasks": {tid: {k: v for k, v in t.items() if k != 'process'} for tid, t in tasks.items()}, "active_workers": active_workers, "max_workers": CONFIG["MAX_DOWNLOADS"]}
+        ordered_items = sorted(
+            tasks.items(),
+            key=lambda item: item[1].get('created_at', ''),
+            reverse=True
+        )
+        data = {
+            "tasks": {tid: {k: v for k, v in t.items() if k != 'process'} for tid, t in ordered_items},
+            "task_order": [tid for tid, _ in ordered_items],
+            "active_workers": active_workers,
+            "max_workers": CONFIG["MAX_DOWNLOADS"]
+        }
     return jsonify(data)
 
 @app.route('/api/folders')
@@ -504,26 +529,53 @@ def manage_task(task_id):
 def down():
     global GLOBAL_REFERER
     try:
-        url = request.form.get('url', '').strip()
+        url_text = request.form.get('url', '').strip()
         raw_name = request.form.get('name', 'video').strip()
         referer_val = request.form.get('referer', '').strip()
         
-        if not url:
+        if not url_text:
             return jsonify({"error": "URL不能为空"}), 400
+
+        urls = extract_m3u8_urls(url_text)
+        if not urls:
+            return jsonify({"error": "没有识别到有效的 m3u8 链接"}), 400
         
         if referer_val == "https://" or not referer_val: 
             referer_val = ""
         
-        with TASK_LOCK: 
+        with TASK_LOCK:
+            active_urls = {t.get('url'): t for t in tasks.values() if t.get('status') in ACTIVE_TASK_STATUSES}
             GLOBAL_REFERER = referer_val
-        
-        task_id = str(uuid.uuid4())[:8]
-        name = f"{raw_name}_{datetime.datetime.now().strftime('%m%d_%H%M%S')}_{task_id[:3]}"
-        
-        log_info(f"[任务创建] 新下载任务: {task_id} - {name}")
-        start_task(url, name, task_id)
-        
-        return '', 200
+
+        created_count = 0
+        skipped_names = []
+        total_count = len(urls)
+        timestamp = datetime.datetime.now().strftime('%m%d_%H%M%S')
+
+        for index, url in enumerate(urls, 1):
+            existing_task = active_urls.get(url)
+            if existing_task:
+                skipped_names.append(existing_task.get('name', '未命名任务'))
+                continue
+
+            task_id = str(uuid.uuid4())[:8]
+            if total_count > 1:
+                name = f"{raw_name}_{index:02d}_{timestamp}_{task_id[:3]}"
+            else:
+                name = f"{raw_name}_{timestamp}_{task_id[:3]}"
+
+            log_info(f"[任务创建] 新下载任务: {task_id} - {name}")
+            start_task(url, name, task_id)
+            active_urls[url] = {"name": name, "status": "排队中"}
+            created_count += 1
+
+        if created_count == 0:
+            return jsonify({"error": f"链接均已存在活跃任务：{', '.join(skipped_names[:3])}"}), 409
+
+        message = f"已创建 {created_count} 个任务"
+        if skipped_names:
+            message += f"，跳过 {len(skipped_names)} 个重复任务"
+        return jsonify({"message": message, "created": created_count, "skipped": len(skipped_names)}), 200
     except Exception as e:
         log_error(f"创建下载任务失败: {e}")
         return jsonify({"error": str(e)}), 500
@@ -547,6 +599,7 @@ def local_merge():
                 'status': '排队中', 
                 'log': '等待执行扫描...', 
                 'folder_target': folder_name, 
+                'created_at': datetime.datetime.now().isoformat(timespec='seconds'),
                 'process': None
             }
         
@@ -575,6 +628,7 @@ def start_task(url, name, task_id):
             'cmd': cmd, 
             'status': '排队中', 
             'log': '准备中...', 
+            'created_at': datetime.datetime.now().isoformat(timespec='seconds'),
             'process': None
         }
 
