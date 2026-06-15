@@ -139,8 +139,8 @@
         <div class="card">
             <h2>添加下载任务</h2>
             <form id="downForm">
+                <textarea class="input-full" name="url" placeholder="粘贴 m3u8 链接，支持多个链接混合输入" required rows="3"></textarea>
                 <div class="input-group">
-                    <input type="text" name="url" placeholder="粘贴 m3u8 链接" required>
                     <input type="text" name="name" placeholder="视频名称" value="video" required>
                 </div>
                 <input type="text" class="input-full" name="referer" value="https://" placeholder="选填：全局 Referer">
@@ -275,8 +275,10 @@
             const button = this.querySelector('button[type="submit"]');
             button.disabled = true;
             try {
-                await apiFetch('/down', { method: 'POST', body: new URLSearchParams(new FormData(this)) });
+                const response = await apiFetch('/down', { method: 'POST', body: new URLSearchParams(new FormData(this)) });
+                const data = await response.json().catch(() => ({}));
                 this.elements['url'].value = '';
+                if (data.message) alert(data.message);
                 refreshTasks();
             } catch (err) {
                 alert(err.message || '创建下载任务失败');
@@ -460,7 +462,7 @@
                 const data = await response.json();
                 document.getElementById('workerStatus').innerText = `运行中: ${data.active_workers}/${data.max_workers}`;
                 
-                const taskIds = Object.keys(data.tasks);
+                const taskIds = Array.isArray(data.task_order) ? data.task_order : Object.keys(data.tasks);
                 const hasActiveTask = taskIds.some(id => ['排队中', '下载中', '合并中', '等待FFmpeg'].includes(data.tasks[id].status));
                 nextRefreshDelay = hasActiveTask ? ACTIVE_REFRESH_INTERVAL : IDLE_REFRESH_INTERVAL;
                 selectedTasks.forEach(taskId => {
