@@ -26,15 +26,39 @@ RUN set -eux; \
     esac; \
     mkdir -p /tmp/re_extract; \
     tar -xzf "$RE_TAR" -C /tmp/re_extract; \
-    find /tmp/re_extract -name "N_m3u8DL-RE*" ! -name "*.md" -type f -exec mv {} /app/N_m3u8DL-RE \; ; \
+    RE_BIN="$(find /tmp/re_extract -type f -name 'N_m3u8DL-RE*' ! -name '*.md' | head -n1)"; \
+    if [ -z "$RE_BIN" ]; then echo "ERROR: N_m3u8DL-RE binary not found in tarball"; ls -laR /tmp/re_extract; exit 1; fi; \
+    mv "$RE_BIN" /app/N_m3u8DL-RE; \
     chmod 755 /app/N_m3u8DL-RE; \
+    ls -la /app/N_m3u8DL-RE; \
     rm -rf /tmp/re_extract /tmp/vendor
 
 COPY templates ./templates
 COPY main.py .
 
-COPY entrypoint.sh /entrypoint.sh
-RUN sed -i 's/\r$//' /entrypoint.sh && \
+RUN printf '%s\n' '#!/bin/sh' \
+    'PUID=${PUID:-0}' \
+    'PGID=${PGID:-0}' \
+    'if [ "$PUID" != "0" ] || [ "$PGID" != "0" ]; then' \
+    '    echo "Setting up user with PUID=$PUID, PGID=$PGID"' \
+    '    if ! getent group appuser > /dev/null 2>&1; then' \
+    '        groupadd -g "$PGID" appuser' \
+    '    else' \
+    '        groupmod -g "$PGID" appuser' \
+    '    fi' \
+    '    if ! id appuser > /dev/null 2>&1; then' \
+    '        useradd -u "$PUID" -g "$PGID" -d /app appuser' \
+    '    else' \
+    '        usermod -u "$PUID" -g "$PGID" appuser' \
+    '    fi' \
+    '    chown -R "$PUID:$PGID" /downloads' \
+    'fi' \
+    'echo "Starting DDM3U8 service..."' \
+    'if [ "$PUID" != "0" ] || [ "$PGID" != "0" ]; then' \
+    '    exec su-exec appuser python main.py' \
+    'else' \
+    '    exec python main.py' \
+    'fi' > /entrypoint.sh && \
     chmod +x /entrypoint.sh && \
     mkdir -p /downloads
 
