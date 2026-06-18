@@ -109,29 +109,28 @@
         #folderSelectBtn { background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 12px; padding: 12px 14px; color: #334155; font-size: 13px; width: 100%; cursor: pointer; text-align: left; transition: border-color 0.18s, background 0.18s; }
         #folderSelectBtn:hover { background: #fff; border-color: #94a3b8; }
         @media (max-width: 600px) {
-            body { padding: 12px 10px; }
-            .logo-title { font-size: 22px; }
-            .logo-subtitle { font-size: 11px; }
-            .card { padding: 14px; border-radius: 14px; }
+            body { padding: 18px 12px; }
+            .logo-title { font-size: 25px; }
+            .logo-subtitle { font-size: 12px; }
+            .card { padding: 18px; border-radius: 16px; }
             .card-header { align-items: flex-start; flex-direction: column; }
             .input-group { flex-direction: column; }
             .btn-group { flex-wrap: wrap; }
             thead { display: none; }
-            tr { display: block; border-bottom: 1px solid #e2e8f0; padding: 10px 12px 8px; margin-bottom: 8px; border-radius: 12px; background: #fafafa; position: relative; }
+            tr { display: block; border-bottom: 1px solid #e2e8f0; padding: 10px 8px; margin-bottom: 8px; border-radius: 12px; background: #fafafa; }
             td { display: block; border: none; padding: 0; }
-            td:nth-child(1) { position: absolute; top: 10px; left: 12px; }
-            td:nth-child(2) { font-weight: 700; font-size: 13px; color: #0f172a; padding-left: 26px; margin-bottom: 6px; }
-            td:nth-child(3) { display: inline; margin-right: 8px; }
-            td:nth-child(4) { margin-bottom: 6px; }
-            td:nth-child(5) { display: inline; margin-left: auto; }
+            td:nth-child(1) { position: absolute; top: 10px; left: 8px; }
+            td:nth-child(2) { font-weight: 700; font-size: 14px; color: #0f172a; padding-left: 28px; margin-bottom: 6px; }
+            td:nth-child(3) { display: inline-block; margin-right: 10px; margin-bottom: 6px; }
+            td:nth-child(4) { margin-bottom: 8px; }
+            td:nth-child(5) { margin-top: 4px; }
             .progress-col { width: auto; }
-            .batch-bar { flex-direction: column; gap: 8px; }
-            .btn-sm { padding: 3px 8px; font-size: 10px; border-radius: 8px; height: 24px; line-height: 1; }
-            .btn-group { gap: 4px; display: inline-flex; }
-            .status { padding: 2px 7px; font-size: 10px; }
-            .progress-bar { height: 5px; }
-            .progress-text { font-size: 10px; margin-top: 4px; }
-            .table-container { border-radius: 12px; }
+            .batch-bar { flex-direction: column; gap: 10px; }
+            .btn-sm { padding: 6px 10px; font-size: 11px; }
+            .btn-group { gap: 6px; }
+            .status { padding: 4px 8px; font-size: 11px; }
+            .progress-bar { height: 6px; }
+            .progress-text { font-size: 11px; }
         }
     </style>
 </head>
@@ -550,14 +549,12 @@
                     <tr>
                         <td><input type="checkbox" class="task-checkbox" data-task-id="${safeId}" onchange="toggleTaskSelect(this.dataset.taskId, this)" ${selectedTasks.has(id) ? 'checked' : ''}></td>
                         <td title="${safeName}">${safeName}</td>
-                        <td>
-                            <span class="status ${statusClass}">${safeStatus}</span>
-                            <span style="float:right;">${btns}</span>
-                        </td>
+                        <td><span class="status ${statusClass}">${safeStatus}</span></td>
                         <td>
                             <div class="progress-bar"><div class="progress-fill" style="width:${Math.min(displayPercent, 100)}%"></div></div>
                             <div class="progress-text">${safeLog}</div>
                         </td>
+                        <td>${btns}</td>
                     </tr>`;
                 }
                 document.getElementById('taskList').innerHTML = html;
@@ -588,4 +585,14 @@
             if (document.hidden) {
                 if (refreshTimer) {
                     clearTimeout(refreshTimer);
-                    refreshTimer
+                    refreshTimer = null;
+                }
+            } else {
+                refreshNow();
+            }
+        });
+
+        refreshNow();
+    </script>
+</body>
+</html>
