@@ -603,6 +603,7 @@ def local_merge():
                 'process': None
             }
         
+        save_tasks()
         log_info(f"[任务创建] 新本地合并任务: {task_id} - {folder_name}")
         return '', 200
     except Exception as e:
@@ -631,6 +632,7 @@ def start_task(url, name, task_id):
             'created_at': datetime.datetime.now().isoformat(timespec='seconds'),
             'process': None
         }
+    save_tasks()
 
 def scheduler_loop():
     while True:
