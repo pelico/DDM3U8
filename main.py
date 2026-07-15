@@ -14,10 +14,8 @@ from flask import Flask, request, jsonify, render_template
 from functools import wraps
 from dotenv import load_dotenv
 
-# 加载环境变量
 load_dotenv()
 
-# ================= 日志系统配置 =================
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -28,17 +26,15 @@ logging.basicConfig(
 logger = logging.getLogger('DDM3U8')
 logging.getLogger('werkzeug').setLevel(logging.ERROR)
 
-# ================= 全局配置 (从环境变量读取) =================
 CONFIG = {
     "PORT": int(os.environ.get("PORT", 8080)),
     "DB_PATH": "/downloads/tasks_history.json",
-    "BIN_PATH": "/app/N_m3u8DL-RE",
+    "BIN_PATH": "yt-dlp",
     "DOWNLOAD_DIR": "/downloads",
     "TEMP_EXTRACT_DIR": "/tmp/re_extract",
     "MAX_DOWNLOADS": int(os.environ.get("MAX_DOWNLOADS", 3))
 }
 
-# 读取鉴权环境变量
 WEB_USER = os.environ.get("WEB_USER", "").strip()
 WEB_PASS = os.environ.get("WEB_PASS", "").strip()
 
@@ -69,7 +65,6 @@ def extract_m3u8_urls(text):
             urls.append(url)
     return urls
 
-# ================= Basic Auth 装饰器 =================
 def requires_auth(f):
     @wraps(f)
     def decorated(*args, **kwargs):
@@ -80,12 +75,10 @@ def requires_auth(f):
         return f(*args, **kwargs)
     return decorated
 
-# ================= 配置验证 =================
 def validate_config():
     logger.info("=== 配置验证 ===")
     ok = True
     
-    # 验证下载目录
     if not os.path.exists(CONFIG["DOWNLOAD_DIR"]):
         try:
             os.makedirs(CONFIG["DOWNLOAD_DIR"], exist_ok=True)
@@ -94,7 +87,6 @@ def validate_config():
             log_error(f"无法创建下载目录 {CONFIG['DOWNLOAD_DIR']}: {e}")
             ok = False
     
-    # 验证临时目录
     if not os.path.exists(CONFIG["TEMP_EXTRACT_DIR"]):
         try:
             os.makedirs(CONFIG["TEMP_EXTRACT_DIR"], exist_ok=True)
@@ -103,23 +95,20 @@ def validate_config():
             log_error(f"无法创建临时目录 {CONFIG['TEMP_EXTRACT_DIR']}: {e}")
             ok = False
     
-    # 验证 ffmpeg - 不强制要求，允许后台安装
     if not shutil.which("ffmpeg"):
         logger.warning("⚠️ ffmpeg 暂未安装，服务将继续运行，等待后台安装完成后才能进行合并操作")
     else:
         logger.info("ffmpeg 已安装")
     
-    # 验证 N_m3u8DL-RE
-    if not os.path.exists(CONFIG["BIN_PATH"]):
-        log_error(f"N_m3u8DL-RE 不存在: {CONFIG['BIN_PATH']}")
+    if not shutil.which(CONFIG["BIN_PATH"]):
+        log_error(f"{CONFIG['BIN_PATH']} 不存在")
     else:
-        logger.info(f"N_m3u8DL-RE 已就绪: {CONFIG['BIN_PATH']}")
+        logger.info(f"{CONFIG['BIN_PATH']} 已就绪")
     
     if ok:
         logger.info("配置验证完成")
     return ok
 
-# ================= 环境初始化 =================
 def extract_and_setup(tar_path, dest_path):
     temp_extract_dir = CONFIG["TEMP_EXTRACT_DIR"]
     if os.path.exists(temp_extract_dir): shutil.rmtree(temp_extract_dir)
@@ -146,15 +135,8 @@ def fix_environment():
     if not shutil.which("ffmpeg"):
         log_info("[环境初始化] ffmpeg 未就绪，请检查镜像构建是否已安装 ffmpeg")
     
-    bin_path = CONFIG["BIN_PATH"]
-    if os.path.exists(bin_path):
-        try:
-            os.chmod(bin_path, 0o755)
-        except Exception as e:
-            log_info(f"[环境初始化] 设置 N_m3u8DL-RE 权限失败: {str(e)}")
-        return
-    
-    log_info("[环境初始化] N_m3u8DL-RE 未就绪，请检查镜像构建是否已内置对应架构二进制")
+    if not shutil.which(CONFIG["BIN_PATH"]):
+        log_info(f"[环境初始化] {CONFIG['BIN_PATH']} 未就绪，请检查镜像构建是否已安装")
 
 BOOT_STATE = {
     "phase": "unknown",
@@ -168,7 +150,7 @@ BOOT_STATE = {
 
 def refresh_boot_state():
     BOOT_STATE["ffmpeg_ready"] = shutil.which("ffmpeg") is not None
-    BOOT_STATE["bin_ready"] = os.path.exists(CONFIG["BIN_PATH"])
+    BOOT_STATE["bin_ready"] = shutil.which(CONFIG["BIN_PATH"]) is not None
     BOOT_STATE["downloads_ready"] = os.path.isdir(CONFIG["DOWNLOAD_DIR"]) and os.access(CONFIG["DOWNLOAD_DIR"], os.W_OK)
     return BOOT_STATE
 
@@ -253,7 +235,6 @@ def boot():
     else:
         logger.info("[启动] 初始化完成")
 
-# ================= 后端业务逻辑 =================
 def execute_merge_logic(task_id, target_tmp_dir, final_out_file, log_title):
     try:
         if not os.path.exists(target_tmp_dir): raise Exception("未找到缓存目录")
@@ -349,17 +330,14 @@ def run_download(task_id, cmd):
     try:
         with TASK_LOCK: 
             tasks[task_id]['status'] = '下载中'
-            tasks[task_id]['process'] = None  # 先清空
+            tasks[task_id]['process'] = None
         save_tasks()
         
-        # 创建子进程
         process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, encoding='utf-8', errors='ignore')
         
-        # 保存进程引用到全局字典
         with TASK_LOCK:
             tasks[task_id]['process'] = process
         
-        # 读取输出
         for line in iter(process.stdout.readline, ''):
             with TASK_LOCK:
                 if task_id not in tasks:
@@ -369,10 +347,9 @@ def run_download(task_id, cmd):
                     log_info(f"[调度器] 任务 [{task_name}] 状态已变更为 {current_status}，停止读取输出")
                     break
                 log_content = line.strip()
-                if "%" in log_content or "B/s" in log_content: 
+                if "%" in log_content or "B/s" in log_content or "downloading" in log_content.lower(): 
                     tasks[task_id]['log'] = log_content[-60:]
         
-        # 等待进程结束
         process.wait()
         
         with TASK_LOCK:
@@ -399,7 +376,6 @@ def run_download(task_id, cmd):
             process.stdout.close()
         save_tasks()
 
-# ================= Flask 路由 =================
 @app.route('/health')
 def health():
     return jsonify({"status": "ok"}), 200
@@ -629,15 +605,15 @@ def start_task(url, name, task_id):
     global GLOBAL_REFERER
     cmd = [
         CONFIG["BIN_PATH"], url,
-        "--save-name", name,
-        "--save-dir", CONFIG["DOWNLOAD_DIR"],
-        "--tmp-dir", CONFIG["DOWNLOAD_DIR"],
-        "-M", "format=mp4",
-        "--thread-count", "10"
+        "-o", os.path.join(CONFIG["DOWNLOAD_DIR"], f"{name}.mp4"),
+        "--concurrent-fragments", "10",
+        "--no-part",
+        "--merge-output-format", "mp4",
+        "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     ]
     with TASK_LOCK:
         if GLOBAL_REFERER: 
-            cmd.extend(["--header", f"Referer:{GLOBAL_REFERER}"])
+            cmd.extend(["--add-header", f"Referer:{GLOBAL_REFERER}"])
         tasks[task_id] = {
             'url': url, 
             'name': name, 
@@ -653,10 +629,8 @@ def scheduler_loop():
     while True:
         try:
             with TASK_LOCK:
-                # 检查 ffmpeg 是否可用
                 ffmpeg_ready = shutil.which("ffmpeg") is not None
                 
-                # 更新等待 ffmpeg 的任务状态
                 if ffmpeg_ready:
                     for tid, t in tasks.items():
                         if t['status'] == '等待FFmpeg':
@@ -668,7 +642,6 @@ def scheduler_loop():
                     task_to_run = next(((tid, t) for tid, t in tasks.items() if t['status'] == '排队中'), None)
                     if task_to_run:
                         tid, task = task_to_run
-                        # 对于需要合并的下载任务，检查 ffmpeg 是否就绪
                         if task.get('cmd'):
                             if ffmpeg_ready:
                                 threading.Thread(target=run_download, args=(tid, task['cmd'])).start()
@@ -676,7 +649,6 @@ def scheduler_loop():
                                 task['status'] = '等待FFmpeg'
                                 task['log'] = '等待FFmpeg安装完成...'
                         else:
-                            # 本地合并任务必须等待 ffmpeg
                             if ffmpeg_ready:
                                 threading.Thread(target=run_local_merge_tool, args=(tid, task['folder_target'])).start()
                             else:
@@ -690,12 +662,10 @@ if __name__ == "__main__":
     logger.info("=== DDM3U8 服务启动 ===")
     boot()
     
-    # 启动调度器
     scheduler_thread = threading.Thread(target=scheduler_loop, daemon=True)
     scheduler_thread.start()
     logger.info(f"调度器已启动，最大并发下载数: {CONFIG['MAX_DOWNLOADS']}")
     
-    # 启动 Flask
     logger.info(f"Flask 服务启动，监听端口: {CONFIG['PORT']}")
     if WEB_USER and WEB_PASS:
         logger.info("Basic Auth 已启用")
