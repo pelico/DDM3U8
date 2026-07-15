@@ -334,7 +334,12 @@ def run_download(task_id, cmd):
             tasks[task_id]['process'] = None
         save_tasks()
         
-        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, encoding='utf-8', errors='ignore')
+        # 设置环境变量，确保合并时使用映射目录的临时空间
+        env = os.environ.copy()
+        temp_dir = tasks.get(task_id, {}).get('temp_dir', CONFIG["DOWNLOAD_DIR"])
+        env['TMPDIR'] = temp_dir
+        
+        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, encoding='utf-8', errors='ignore', env=env)
         
         with TASK_LOCK:
             tasks[task_id]['process'] = process
@@ -657,7 +662,8 @@ def start_task(url, name, task_id, download_dir=None):
             'log': '准备中...', 
             'created_at': datetime.datetime.now().isoformat(timespec='seconds'),
             'process': None,
-            'download_dir': download_dir
+            'download_dir': download_dir,
+            'temp_dir': temp_dir
         }
     save_tasks()
 
