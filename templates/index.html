@@ -306,7 +306,7 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ action: action })
                 });
-                refreshTasks();
+                refreshTasks(true);
             } catch (err) {
                 showToast(err.message || '操作失败', 'error');
             }
@@ -317,7 +317,7 @@
                 await apiFetch('/api/clear', { method: 'POST' });
                 selectedTasks.clear();
                 updateSelectedCount();
-                refreshTasks();
+                refreshTasks(true);
                 showToast('已清理任务记录');
             } catch (err) {
                 showToast(err.message || '清理失败', 'error');
@@ -334,7 +334,7 @@
                 this.elements['url'].value = '';
                 if (data.message) showToast(data.message);
                 else showToast('任务添加成功');
-                refreshTasks();
+                refreshTasks(true);
             } catch (err) {
                 showToast(err.message || '创建下载任务失败', 'error');
             } finally {
@@ -356,7 +356,7 @@
                 document.getElementById('folderSelectBtn').textContent = '📁 选择包含.ts缓存的文件夹';
                 folderInput.value = '';
                 showToast('合并任务添加成功');
-                refreshTasks();
+                refreshTasks(true);
             } catch (err) {
                 showToast(err.message || '创建本地合并任务失败', 'error');
             } finally {
@@ -488,7 +488,7 @@
             }
             selectedTasks.clear();
             updateSelectedCount();
-            refreshTasks();
+            refreshTasks(true);
         }
 
         function batchPause() {
@@ -525,8 +525,8 @@
             }
         }
 
-        async function refreshTasks() {
-            if (isScrolling || refreshInFlight || document.hidden) return;
+        async function refreshTasks(force = false) {
+            if (isScrolling || (!force && refreshInFlight) || document.hidden) return;
             if (refreshTimer) {
                 clearTimeout(refreshTimer);
                 refreshTimer = null;
