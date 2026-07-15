@@ -77,3 +77,6 @@ jobs:
           push: true
           tags: ${{ steps.meta-armv7l.outputs.tags }}
           labels: ${{ steps.meta-armv7l.outputs.labels }}
+          build-args: |
+            PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+            PIP_EXTRA_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple

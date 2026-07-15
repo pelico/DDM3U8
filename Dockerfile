@@ -10,6 +10,7 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
+RUN pip install --no-cache-dir yt-dlp -i https://pypi.tuna.tsinghua.edu.cn/simple
 RUN pip install --no-cache-dir -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 COPY templates ./templates
