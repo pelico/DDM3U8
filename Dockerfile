@@ -5,12 +5,12 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends ffmpeg tzdata su-exec shadow && \
-    rm -rf /var/lib/apt/lists/*
+RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.ustc.edu.cn/g' /etc/apk/repositories && \
+    apk update && \
+    apk add --no-cache ffmpeg tzdata su-exec shadow && \
+    rm -rf /var/cache/apk/*
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir yt-dlp -i https://pypi.tuna.tsinghua.edu.cn/simple
 RUN pip install --no-cache-dir -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 COPY templates ./templates
