@@ -189,12 +189,11 @@
         </div>
 
         <div class="card tool-card">
-            <h3>🛠️ 本地缓存强制合并工具</h3>
-            <p style="font-size: 12px; color: #92400e; margin: 0 0 12px 0;">用于合并缓存文件夹ts文件，自动扫描并缝合碎片。</p>
+            <h3>🛠️ 本地缓存合并工具</h3>
             <form id="localMergeForm">
                 <input type="hidden" id="folderInputHidden" name="folder_name" required>
-                <button type="button" id="folderSelectBtn" onclick="openFolderModal()">📁 浏览并选择缓存文件夹</button>
-                <button type="submit" class="btn btn-success" style="width: 100%; margin-top: 10px;">🔍 开始扫描并强制合并</button>
+                <button type="button" id="folderSelectBtn" onclick="openFolderModal()">📁 选择包含.ts缓存的文件夹</button>
+                <button type="submit" class="btn btn-success" style="width: 100%; margin-top: 10px;">🔍 扫描并合并</button>
             </form>
         </div>
 
@@ -354,7 +353,7 @@
             button.disabled = true;
             try {
                 await apiFetch('/local_merge', { method: 'POST', body: new URLSearchParams(new FormData(this)) });
-                document.getElementById('folderSelectBtn').textContent = '📁 浏览并选择缓存文件夹';
+                document.getElementById('folderSelectBtn').textContent = '📁 选择缓存文件夹';
                 folderInput.value = '';
                 showToast('合并任务添加成功');
                 refreshTasks();
