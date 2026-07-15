@@ -309,9 +309,10 @@ def run_manual_merge(task_id, task_name):
     with TASK_LOCK:
         if task_id not in tasks: return
         tasks[task_id]['status'] = '合并中'
+        download_dir = tasks[task_id].get('download_dir', CONFIG["DOWNLOAD_DIR"])
     save_tasks()
-    tmp_dir = os.path.join(CONFIG["DOWNLOAD_DIR"], task_name)
-    out_file = os.path.join(CONFIG["DOWNLOAD_DIR"], f"{task_name}.mp4")
+    tmp_dir = os.path.join(download_dir, f"{task_name}_temp")
+    out_file = os.path.join(download_dir, f"{task_name}.mp4")
     execute_merge_logic(task_id, tmp_dir, out_file, "手动强合")
 
 def run_local_merge_tool(task_id, folder_name):
@@ -354,10 +355,14 @@ def run_download(task_id, cmd):
         
         with TASK_LOCK:
             if task_id in tasks and tasks[task_id]['status'] == '下载中':
-                expected_out_file = os.path.join(CONFIG["DOWNLOAD_DIR"], f"{task_name}.mp4")
+                download_dir = tasks[task_id].get('download_dir', CONFIG["DOWNLOAD_DIR"])
+                expected_out_file = os.path.join(download_dir, f"{task_name}.mp4")
                 if process.returncode == 0 and os.path.exists(expected_out_file):
                     tasks[task_id]['status'] = '已完成'
                     tasks[task_id]['log'] = '✅ 完整下载并合并成功'
+                    # 清理临时文件夹
+                    temp_dir = os.path.join(download_dir, f"{task_name}_temp")
+                    shutil.rmtree(temp_dir, ignore_errors=True)
                 else:
                     reason = "进程报错中断" if process.returncode != 0 else "假成功(未生成最终MP4)"
                     tasks[task_id]['status'] = '错误'
@@ -631,12 +636,14 @@ def start_task(url, name, task_id, download_dir=None):
         download_dir = CONFIG["DOWNLOAD_DIR"]
     output_path = os.path.join(download_dir, f"{name}.mp4")
     temp_dir = os.path.join(download_dir, f"{name}_temp")
+    os.makedirs(temp_dir, exist_ok=True)
     cmd = [
         CONFIG["BIN_PATH"], url,
         "-o", output_path,
         "--paths", f"temp:{temp_dir}",
         "--concurrent-fragments", "10",
         "--hls-use-mpegts",
+        "--hls-prefer-native",
         "--merge-output-format", "mp4",
         "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     ]
