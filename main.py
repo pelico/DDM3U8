@@ -265,7 +265,7 @@ def execute_merge_logic(task_id, target_tmp_dir, final_out_file, log_title):
         
         if not ts_files_in_order:
             log_info(f"[{log_title}] 未找到有效的m3u8清单，将尝试按文件名自然排序（可能导致乱序）")
-            ts_files = [f for f in os.listdir(target_sub_dir) if f.endswith(('.ts', '.m4s', '.jpeg'))]
+            ts_files = [f for f in os.listdir(target_sub_dir) if f.endswith('.ts') or f.endswith('.m4s') or f.endswith('.jpeg') or '.part-Frag' in f]
             def natural_keys(text): return [int(c) if c.isdigit() else c for c in re.split(r'(\d+)', text)]
             ts_files.sort(key=natural_keys)
             ts_files_in_order = ts_files
@@ -634,15 +634,14 @@ def start_task(url, name, task_id, download_dir=None):
     global GLOBAL_REFERER
     if download_dir is None:
         download_dir = CONFIG["DOWNLOAD_DIR"]
-    output_path = os.path.join(download_dir, f"{name}.mp4")
     temp_dir = os.path.join(download_dir, f"{name}_temp")
     os.makedirs(temp_dir, exist_ok=True)
     cmd = [
         CONFIG["BIN_PATH"], url,
-        "-o", output_path,
-        "--paths", f"temp:{temp_dir}",
+        "-P", f"download:{download_dir}",
+        "-P", f"temp:{temp_dir}",
+        "-o", f"{name}.mp4",
         "--concurrent-fragments", "10",
-        "--hls-use-mpegts",
         "--hls-prefer-native",
         "--merge-output-format", "mp4",
         "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
