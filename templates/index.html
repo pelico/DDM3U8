@@ -124,10 +124,10 @@
         @keyframes toastIn { from { opacity: 0; transform: translateX(100px); } to { opacity: 1; transform: translateX(0); } }
         @keyframes toastOut { from { opacity: 1; transform: translateX(0); } to { opacity: 0; transform: translateX(100px); } }
         @media (max-width: 600px) {
-            body { padding: 12px 10px; }
+            body { padding: 12px 10px; background: linear-gradient(135deg, #eef2ff 0%, #f8fafc 100%); }
             .logo-title { font-size: 22px; }
             .logo-subtitle { font-size: 11px; }
-            .card { padding: 14px; border-radius: 14px; margin-bottom: 12px; }
+            .card { padding: 14px; border-radius: 14px; margin-bottom: 12px; backdrop-filter: none; background: #ffffff; box-shadow: 0 4px 12px rgba(15, 23, 42, 0.06); }
             .card-header { align-items: flex-start; flex-direction: column; margin-bottom: 12px; padding-bottom: 10px; }
             h2 { font-size: 16px; margin-bottom: 12px; }
             h3 { font-size: 15px; margin-bottom: 10px; }
@@ -161,6 +161,8 @@
             .table-container { border-radius: 12px; }
             .tool-card p { font-size: 12px; }
             #folderSelectBtn { padding: 10px 12px; font-size: 13px; }
+            .modal { backdrop-filter: none; }
+            .toast { backdrop-filter: none; }
         }
     </style>
 </head>
@@ -250,6 +252,8 @@
         let taskProgressCache = {};
         let refreshInFlight = false;
         let refreshTimer = null;
+        let isScrolling = false;
+        let scrollTimeout = null;
         const ACTIVE_REFRESH_INTERVAL = 2000;
         const IDLE_REFRESH_INTERVAL = 10000;
 
@@ -500,8 +504,30 @@
             batchOperate('cancel', '批量取消失败');
         }
 
+        function initScrollDetection() {
+            const container = document.querySelector('.container');
+            const detectScroll = () => {
+                isScrolling = true;
+                if (scrollTimeout) clearTimeout(scrollTimeout);
+                scrollTimeout = setTimeout(() => {
+                    isScrolling = false;
+                }, 150);
+            };
+            document.addEventListener('touchstart', detectScroll, { passive: true });
+            document.addEventListener('touchmove', detectScroll, { passive: true });
+            document.addEventListener('touchend', () => {
+                if (scrollTimeout) clearTimeout(scrollTimeout);
+                scrollTimeout = setTimeout(() => {
+                    isScrolling = false;
+                }, 150);
+            }, { passive: true });
+            if (container) {
+                container.addEventListener('scroll', detectScroll, { passive: true });
+            }
+        }
+
         async function refreshTasks() {
-            if (refreshInFlight || document.hidden) return;
+            if (isScrolling || refreshInFlight || document.hidden) return;
             if (refreshTimer) {
                 clearTimeout(refreshTimer);
                 refreshTimer = null;
@@ -521,9 +547,11 @@
                 });
                 
                 if (taskIds.length === 0) {
-                    document.getElementById('taskList').innerHTML = 
-                        '<tr><td colspan="4" class="empty-state"><div class="empty-icon">📋</div>暂无任务记录</td></tr>';
-                    document.getElementById('batchBar').style.display = 'none';
+                    requestAnimationFrame(() => {
+                        document.getElementById('taskList').innerHTML = 
+                            '<tr><td colspan="4" class="empty-state"><div class="empty-icon">📋</div>暂无任务记录</td></tr>';
+                        document.getElementById('batchBar').style.display = 'none';
+                    });
                     selectedTasks.clear();
                     return;
                 }
@@ -599,8 +627,10 @@
                         </td>
                     </tr>`;
                 }
-                document.getElementById('taskList').innerHTML = html;
-                updateSelectedCount();
+                requestAnimationFrame(() => {
+                    document.getElementById('taskList').innerHTML = html;
+                    updateSelectedCount();
+                });
             } catch (err) {
                 document.getElementById('workerStatus').innerText = '连接异常，正在重试';
             } finally {
@@ -634,6 +664,7 @@
             }
         });
 
+        initScrollDetection();
         refreshNow();
     </script>
 </body>
