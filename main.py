@@ -603,11 +603,14 @@ def local_merge():
 
 def start_task(url, name, task_id):
     global GLOBAL_REFERER
+    output_path = os.path.join(CONFIG["DOWNLOAD_DIR"], f"{name}.mp4")
+    temp_dir = os.path.join(CONFIG["DOWNLOAD_DIR"], f"{name}_temp")
     cmd = [
         CONFIG["BIN_PATH"], url,
-        "-o", os.path.join(CONFIG["DOWNLOAD_DIR"], f"{name}.mp4"),
+        "-o", output_path,
+        "--paths", f"temp:{temp_dir}",
         "--concurrent-fragments", "10",
-        "--no-part",
+        "--hls-use-mpegts",
         "--merge-output-format", "mp4",
         "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     ]
