@@ -463,6 +463,21 @@ def clear_tasks():
     save_tasks()
     return '', 200
 
+@app.route('/api/clear-selected', methods=['POST'])
+@requires_auth
+def clear_selected_tasks():
+    try:
+        data = request.get_json() or {}
+        ids = data.get('ids', [])
+    except Exception as e:
+        log_error(f"解析请求体失败: {e}")
+        return '', 400
+    with TASK_LOCK:
+        to_delete = [tid for tid in ids if tid in tasks and tasks[tid]['status'] not in ['下载中', '排队中', '合并中']]
+        for tid in to_delete: tasks.pop(tid, None)
+    save_tasks()
+    return jsonify({"deleted": len(to_delete)}), 200
+
 @app.route('/api/task/<task_id>', methods=['POST'])
 @requires_auth
 def manage_task(task_id):

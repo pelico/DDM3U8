@@ -202,7 +202,6 @@
                 <h3>📋 任务列表</h3>
                 <div style="display: flex; align-items: center; gap: 12px;">
                     <span id="workerStatus" style="font-size: 12px; color: #6b7280;">运行中: 0/3</span>
-                    <button class="btn btn-secondary btn-sm" onclick="clearTasks()">清理记录</button>
                 </div>
             </div>
 
@@ -215,6 +214,7 @@
                     <button class="btn btn-sm btn-main" onclick="batchResume()">▶ 恢复选中</button>
                     <button class="btn btn-sm btn-warning" onclick="batchPause()">⏸ 暂停选中</button>
                     <button class="btn btn-sm btn-danger" onclick="batchCancel()">✕ 取消选中</button>
+                    <button class="btn btn-sm btn-secondary" onclick="batchClear()">🗑 清理记录</button>
                 </div>
             </div>
 
@@ -322,6 +322,25 @@
             } catch (err) {
                 showToast(err.message || '清理失败', 'error');
             }
+        }
+
+        async function batchClear() {
+            if (selectedTasks.size === 0) return;
+            const ids = Array.from(selectedTasks);
+            try {
+                const response = await apiFetch('/api/clear-selected', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ids })
+                });
+                const data = await response.json();
+                showToast(`已清理 ${data.deleted || 0} 条记录`);
+            } catch (err) {
+                showToast(err.message || '清理选中失败', 'error');
+            }
+            selectedTasks.clear();
+            updateSelectedCount();
+            refreshTasks(true);
         }
 
         document.getElementById('downForm').onsubmit = async function(e) {
