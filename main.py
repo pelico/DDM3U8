@@ -448,7 +448,21 @@ def get_tasks():
 @requires_auth
 def get_folders():
     try:
-        folders = [f for f in os.listdir(CONFIG["DOWNLOAD_DIR"]) if os.path.isdir(os.path.join(CONFIG["DOWNLOAD_DIR"], f)) and not f.startswith('.')]
+        base_dir = CONFIG["DOWNLOAD_DIR"]
+        folders = []
+        # 扫描根目录
+        for item in os.listdir(base_dir):
+            item_path = os.path.join(base_dir, item)
+            if os.path.isdir(item_path) and not item.startswith('.'):
+                folders.append(item)
+                # 扫描一层子目录
+                try:
+                    for sub_item in os.listdir(item_path):
+                        sub_path = os.path.join(item_path, sub_item)
+                        if os.path.isdir(sub_path) and not sub_item.startswith('.'):
+                            folders.append(f"{item}/{sub_item}")
+                except:
+                    pass
         return jsonify({"folders": sorted(folders)})
     except Exception as e:
         log_error(f"获取文件夹列表失败: {e}")
@@ -547,6 +561,7 @@ def down():
         url_text = request.form.get('url', '').strip()
         raw_name = request.form.get('name', 'video').strip()
         referer_val = request.form.get('referer', '').strip()
+        sub_path = request.form.get('sub_path', '').strip()
         
         if not url_text:
             return jsonify({"error": "URL不能为空"}), 400
@@ -557,6 +572,15 @@ def down():
         
         if referer_val == "https://" or not referer_val: 
             referer_val = ""
+        
+        # 处理下载子目录
+        download_dir = CONFIG["DOWNLOAD_DIR"]
+        if sub_path:
+            # 清理路径，防止目录遍历
+            sub_path = os.path.basename(sub_path.strip('/\\'))
+            if sub_path:
+                download_dir = os.path.join(download_dir, sub_path)
+                os.makedirs(download_dir, exist_ok=True)
         
         with TASK_LOCK:
             active_urls = {t.get('url'): t for t in tasks.values() if t.get('status') in ACTIVE_TASK_STATUSES}
@@ -579,8 +603,8 @@ def down():
             else:
                 name = f"{raw_name}_{timestamp}_{task_id[:3]}"
 
-            log_info(f"[任务创建] 新下载任务: {task_id} - {name}")
-            start_task(url, name, task_id)
+            log_info(f"[任务创建] 新下载任务: {task_id} - {name} -> {download_dir}")
+            start_task(url, name, task_id, download_dir)
             active_urls[url] = {"name": name, "status": "排队中"}
             created_count += 1
 
@@ -625,13 +649,15 @@ def local_merge():
         log_error(f"创建本地合并任务失败: {e}")
         return jsonify({"error": str(e)}), 500
 
-def start_task(url, name, task_id):
+def start_task(url, name, task_id, download_dir=None):
     global GLOBAL_REFERER
+    if download_dir is None:
+        download_dir = CONFIG["DOWNLOAD_DIR"]
     cmd = [
         CONFIG["BIN_PATH"], url,
         "--save-name", name,
-        "--save-dir", CONFIG["DOWNLOAD_DIR"],
-        "--tmp-dir", CONFIG["DOWNLOAD_DIR"],
+        "--save-dir", download_dir,
+        "--tmp-dir", download_dir,
         "-M", "format=mp4",
         "--thread-count", "10"
     ]
@@ -645,7 +671,8 @@ def start_task(url, name, task_id):
             'status': '排队中', 
             'log': '准备中...', 
             'created_at': datetime.datetime.now().isoformat(timespec='seconds'),
-            'process': None
+            'process': None,
+            'download_dir': download_dir
         }
     save_tasks()
 
