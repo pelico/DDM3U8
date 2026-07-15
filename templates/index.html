@@ -59,16 +59,21 @@
         .input-full { margin-bottom: 14px; }
         .input-group input:focus, .input-full:focus { border-color: #818cf8; box-shadow: 0 0 0 4px rgba(79, 70, 229, 0.12); background: #fff; }
         .input-group input::placeholder, .input-full::placeholder { color: #94a3b8; }
-        .btn { padding: 11px 18px; border: none; border-radius: 12px; font-size: 14px; font-weight: 700; cursor: pointer; transition: transform 0.16s ease, box-shadow 0.16s ease, filter 0.16s ease, opacity 0.16s ease; display: inline-flex; align-items: center; justify-content: center; gap: 6px; white-space: nowrap; }
-        .btn:hover { transform: translateY(-1px); filter: brightness(1.02); }
+        .btn { padding: 11px 18px; border: none; border-radius: 10px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.2s ease; display: inline-flex; align-items: center; justify-content: center; gap: 6px; white-space: nowrap; }
+        .btn:hover { transform: translateY(-1px); }
         .btn:active { transform: translateY(0); }
-        .btn:disabled { cursor: not-allowed; opacity: 0.58; transform: none; box-shadow: none; }
-        .btn-main { background: linear-gradient(135deg, var(--primary) 0%, #7c3aed 100%); color: white; box-shadow: 0 10px 22px rgba(79, 70, 229, 0.24); }
-        .btn-success { background: linear-gradient(135deg, #10b981 0%, var(--success) 100%); color: white; box-shadow: 0 10px 22px rgba(5, 150, 105, 0.22); }
-        .btn-warning { background: linear-gradient(135deg, #f59e0b 0%, var(--warning) 100%); color: white; box-shadow: 0 10px 22px rgba(217, 119, 6, 0.20); }
-        .btn-danger { background: linear-gradient(135deg, #ef4444 0%, var(--danger) 100%); color: white; box-shadow: 0 10px 22px rgba(220, 38, 38, 0.18); }
-        .btn-secondary { background: #f1f5f9; color: #334155; border: 1px solid #e2e8f0; }
-        .btn-sm { padding: 7px 11px; font-size: 12px; border-radius: 10px; }
+        .btn:disabled { cursor: not-allowed; opacity: 0.5; transform: none; }
+        .btn-main { background: #4f46e5; color: white; }
+        .btn-main:hover { background: #4338ca; }
+        .btn-success { background: #10b981; color: white; }
+        .btn-success:hover { background: #059669; }
+        .btn-warning { background: #f59e0b; color: white; }
+        .btn-warning:hover { background: #d97706; }
+        .btn-danger { background: #ef4444; color: white; }
+        .btn-danger:hover { background: #dc2626; }
+        .btn-secondary { background: transparent; color: #64748b; border: 1px solid #e2e8f0; }
+        .btn-secondary:hover { background: #f8fafc; border-color: #cbd5e1; color: #334155; }
+        .btn-sm { padding: 6px 10px; font-size: 12px; border-radius: 8px; }
         .btn-group { display: flex; gap: 8px; flex-wrap: wrap; }
         .table-container { overflow-x: auto; border-radius: 14px; border: 1px solid #edf2f7; background: white; }
         table { width: 100%; border-collapse: collapse; }
@@ -110,6 +115,14 @@
         .close-btn:hover { color: #1f2937; }
         #folderSelectBtn { background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 12px; padding: 12px 14px; color: #334155; font-size: 13px; width: 100%; cursor: pointer; text-align: left; transition: border-color 0.18s, background 0.18s; }
         #folderSelectBtn:hover { background: #fff; border-color: #94a3b8; }
+        .toast-container { position: fixed; top: 20px; right: 20px; z-index: 9999; display: flex; flex-direction: column; gap: 10px; }
+        .toast { padding: 14px 18px; border-radius: 12px; font-size: 14px; font-weight: 500; display: flex; align-items: center; gap: 8px; box-shadow: 0 10px 40px rgba(15, 23, 42, 0.15); backdrop-filter: blur(12px); animation: toastIn 0.3s ease-out; min-width: 260px; }
+        .toast-success { background: linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%); color: #047857; border: 1px solid #a7f3d0; }
+        .toast-error { background: linear-gradient(135deg, #fef2f2 0%, #fee2e2 100%); color: #b91c1c; border: 1px solid #fecaca; }
+        .toast-info { background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%); color: #1d4ed8; border: 1px solid #bfdbfe; }
+        .toast-warning { background: linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%); color: #b45309; border: 1px solid #fde68a; }
+        @keyframes toastIn { from { opacity: 0; transform: translateX(100px); } to { opacity: 1; transform: translateX(0); } }
+        @keyframes toastOut { from { opacity: 1; transform: translateX(0); } to { opacity: 0; transform: translateX(100px); } }
         @media (max-width: 600px) {
             body { padding: 12px 10px; }
             .logo-title { font-size: 22px; }
@@ -122,6 +135,7 @@
             .input-group input { padding: 10px 12px; }
             .input-group { margin-bottom: 10px; }
             .btn { padding: 10px 14px; font-size: 13px; }
+            .btn-secondary { background: transparent; }
             .input-group { flex-direction: column; }
             thead { display: none; }
             tr { display: block; border: 1px solid #e2e8f0; padding: 12px; margin-bottom: 10px; border-radius: 14px; background: #fafafa; position: relative; }
@@ -219,6 +233,8 @@
         </div>
     </div>
 
+    <div id="toastContainer" class="toast-container"></div>
+
     <div id="folderModal" class="modal">
         <div class="modal-content">
             <span class="close-btn" onclick="closeFolderModal()">&times;</span>
@@ -267,6 +283,19 @@
             return response;
         }
 
+        function showToast(message, type = 'success') {
+            const container = document.getElementById('toastContainer');
+            const toast = document.createElement('div');
+            const icons = { success: '✅', error: '❌', info: 'ℹ️', warning: '⚠️' };
+            toast.className = `toast toast-${type}`;
+            toast.innerHTML = `<span>${icons[type] || icons.info}</span><span>${escapeHtml(message)}</span>`;
+            container.appendChild(toast);
+            setTimeout(() => {
+                toast.style.animation = 'toastOut 0.3s ease-out forwards';
+                setTimeout(() => toast.remove(), 300);
+            }, 3500);
+        }
+
         async function manageTask(taskId, action) {
             try {
                 await apiFetch(`/api/task/${encodeURIComponent(taskId)}`, {
@@ -276,20 +305,19 @@
                 });
                 refreshTasks();
             } catch (err) {
-                alert(err.message || '操作失败');
+                showToast(err.message || '操作失败', 'error');
             }
         }
 
         async function clearTasks() {
-            if(confirm('将清除所有非运行中的任务记录，确定？')) {
-                try {
-                    await apiFetch('/api/clear', { method: 'POST' });
-                    selectedTasks.clear();
-                    updateSelectedCount();
-                    refreshTasks();
-                } catch (err) {
-                    alert(err.message || '清理失败');
-                }
+            try {
+                await apiFetch('/api/clear', { method: 'POST' });
+                selectedTasks.clear();
+                updateSelectedCount();
+                refreshTasks();
+                showToast('已清理任务记录');
+            } catch (err) {
+                showToast(err.message || '清理失败', 'error');
             }
         }
 
@@ -301,10 +329,11 @@
                 const response = await apiFetch('/down', { method: 'POST', body: new URLSearchParams(new FormData(this)) });
                 const data = await response.json().catch(() => ({}));
                 this.elements['url'].value = '';
-                if (data.message) alert(data.message);
+                if (data.message) showToast(data.message);
+                else showToast('任务添加成功');
                 refreshTasks();
             } catch (err) {
-                alert(err.message || '创建下载任务失败');
+                showToast(err.message || '创建下载任务失败', 'error');
             } finally {
                 button.disabled = false;
             }
@@ -314,7 +343,7 @@
             e.preventDefault();
             const folderInput = document.getElementById('folderInputHidden');
             if (!folderInput.value) {
-                alert('请先选择缓存文件夹');
+                showToast('请先选择缓存文件夹', 'warning');
                 return;
             }
             const button = this.querySelector('button[type="submit"]');
@@ -323,9 +352,10 @@
                 await apiFetch('/local_merge', { method: 'POST', body: new URLSearchParams(new FormData(this)) });
                 document.getElementById('folderSelectBtn').textContent = '📁 浏览并选择缓存文件夹';
                 folderInput.value = '';
+                showToast('合并任务添加成功');
                 refreshTasks();
             } catch (err) {
-                alert(err.message || '创建本地合并任务失败');
+                showToast(err.message || '创建本地合并任务失败', 'error');
             } finally {
                 button.disabled = false;
             }
@@ -441,35 +471,33 @@
             document.getElementById('batchBar').style.display = count > 0 ? 'flex' : 'none';
         }
 
-        async function batchOperate(action, confirmText, errorText) {
+        async function batchOperate(action, errorText) {
             if (selectedTasks.size === 0) return;
             const taskIds = Array.from(selectedTasks);
-            if (confirm(confirmText(taskIds.length))) {
-                try {
-                    await Promise.all(taskIds.map(taskId => apiFetch(`/api/task/${encodeURIComponent(taskId)}`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ action })
-                    })));
-                } catch (err) {
-                    alert(err.message || errorText);
-                }
-                selectedTasks.clear();
-                updateSelectedCount();
-                refreshTasks();
+            try {
+                await Promise.all(taskIds.map(taskId => apiFetch(`/api/task/${encodeURIComponent(taskId)}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action })
+                })));
+            } catch (err) {
+                showToast(err.message || errorText, 'error');
             }
+            selectedTasks.clear();
+            updateSelectedCount();
+            refreshTasks();
         }
 
         function batchPause() {
-            batchOperate('pause', count => `确定要暂停 ${count} 个任务吗？`, '批量暂停失败');
+            batchOperate('pause', '批量暂停失败');
         }
 
         function batchResume() {
-            batchOperate('resume', count => `确定要恢复 ${count} 个任务吗？`, '批量恢复失败');
+            batchOperate('resume', '批量恢复失败');
         }
 
         function batchCancel() {
-            batchOperate('cancel', count => `确定要取消 ${count} 个任务吗？`, '批量取消失败');
+            batchOperate('cancel', '批量取消失败');
         }
 
         async function refreshTasks() {
