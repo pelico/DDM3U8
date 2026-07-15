@@ -109,28 +109,43 @@
         #folderSelectBtn { background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 12px; padding: 12px 14px; color: #334155; font-size: 13px; width: 100%; cursor: pointer; text-align: left; transition: border-color 0.18s, background 0.18s; }
         #folderSelectBtn:hover { background: #fff; border-color: #94a3b8; }
         @media (max-width: 600px) {
-            body { padding: 18px 12px; }
-            .logo-title { font-size: 25px; }
-            .logo-subtitle { font-size: 12px; }
-            .card { padding: 18px; border-radius: 16px; }
-            .card-header { align-items: flex-start; flex-direction: column; }
+            body { padding: 12px 10px; }
+            .logo-title { font-size: 22px; }
+            .logo-subtitle { font-size: 11px; }
+            .card { padding: 14px; border-radius: 14px; margin-bottom: 12px; }
+            .card-header { align-items: flex-start; flex-direction: column; margin-bottom: 12px; padding-bottom: 10px; }
+            h2 { font-size: 16px; margin-bottom: 12px; }
+            h3 { font-size: 15px; margin-bottom: 10px; }
+            .input-full { padding: 10px 12px; margin-bottom: 10px; }
+            .input-group input { padding: 10px 12px; }
+            .input-group { margin-bottom: 10px; }
+            .btn { padding: 10px 14px; font-size: 13px; }
             .input-group { flex-direction: column; }
-            .btn-group { flex-wrap: wrap; }
             thead { display: none; }
-            tr { display: block; border-bottom: 1px solid #e2e8f0; padding: 10px 8px; margin-bottom: 8px; border-radius: 12px; background: #fafafa; }
+            tr { display: block; border: 1px solid #e2e8f0; padding: 12px; margin-bottom: 10px; border-radius: 14px; background: #fafafa; position: relative; }
             td { display: block; border: none; padding: 0; }
-            td:nth-child(1) { position: absolute; top: 10px; left: 8px; }
-            td:nth-child(2) { font-weight: 700; font-size: 14px; color: #0f172a; padding-left: 28px; margin-bottom: 6px; }
-            td:nth-child(3) { display: inline-block; margin-right: 10px; margin-bottom: 6px; }
-            td:nth-child(4) { margin-bottom: 8px; }
-            td:nth-child(5) { margin-top: 4px; }
+            td:nth-child(1) { position: absolute; top: 12px; right: 12px; }
+            td:nth-child(2) { font-weight: 700; font-size: 15px; color: #0f172a; padding-right: 28px; margin-bottom: 8px; }
+            td:nth-child(4) { margin-bottom: 10px; }
+            td:nth-child(3) { display: inline-block; margin-bottom: 0; float: left; padding-top: 4px; }
+            td:nth-child(5) { float: right; text-align: right; }
+            td:nth-child(5) .btn-group { justify-content: flex-end; }
+            tr::after { content: ""; display: table; clear: both; }
+            .select-col { width: auto; }
             .progress-col { width: auto; }
-            .batch-bar { flex-direction: column; gap: 10px; }
-            .btn-sm { padding: 6px 10px; font-size: 11px; }
-            .btn-group { gap: 6px; }
-            .status { padding: 4px 8px; font-size: 11px; }
+            .action-col { width: auto; }
+            .batch-bar { flex-direction: column; gap: 8px; padding: 10px 12px; margin-bottom: 10px; }
+            .batch-info { font-size: 12px; gap: 12px; }
+            .batch-actions { gap: 6px; }
+            .btn-sm { padding: 6px 10px; font-size: 12px; border-radius: 8px; }
+            .btn-group { gap: 6px; display: inline-flex; }
+            .status { padding: 4px 10px; font-size: 12px; }
             .progress-bar { height: 6px; }
-            .progress-text { font-size: 11px; }
+            .progress-text { font-size: 11px; margin-top: 5px; line-height: 1.5; }
+            .checkbox { width: 16px; height: 16px; }
+            .table-container { border-radius: 12px; }
+            .tool-card p { font-size: 12px; }
+            #folderSelectBtn { padding: 10px 12px; font-size: 13px; }
         }
     </style>
 </head>
