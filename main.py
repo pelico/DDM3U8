@@ -35,7 +35,7 @@ CONFIG = {
     "BIN_PATH": "/app/N_m3u8DL-RE",
     "DOWNLOAD_DIR": "/downloads",
     "TEMP_EXTRACT_DIR": "/tmp/re_extract",
-    "MAX_DOWNLOADS": int(os.environ.get("MAX_DOWNLOADS", 2))
+    "MAX_DOWNLOADS": int(os.environ.get("MAX_DOWNLOADS", 3))
 }
 
 # 读取鉴权环境变量
