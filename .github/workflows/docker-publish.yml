@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - armv7l
     tags:
       - "v*.*.*"
   workflow_dispatch:
@@ -36,8 +37,9 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Docker metadata
-        id: meta
+      - name: Docker metadata (main)
+        if: github.ref == 'refs/heads/main'
+        id: meta-main
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}
@@ -46,11 +48,32 @@ jobs:
             type=ref,event=tag
             type=sha,prefix=sha-
 
-      - name: Build and push
+      - name: Docker metadata (armv7l)
+        if: github.ref == 'refs/heads/armv7l'
+        id: meta-armv7l
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=armv7l
+            type=sha,prefix=armv7l-sha-
+
+      - name: Build and push (main)
+        if: github.ref == 'refs/heads/main'
         uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ steps.meta-main.outputs.tags }}
+          labels: ${{ steps.meta-main.outputs.labels }}
+
+      - name: Build and push (armv7l)
+        if: github.ref == 'refs/heads/armv7l'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/arm/v7
+          push: true
+          tags: ${{ steps.meta-armv7l.outputs.tags }}
+          labels: ${{ steps.meta-armv7l.outputs.labels }}
