@@ -76,9 +76,11 @@
         td { padding: 14px 12px; border-bottom: 1px solid #f1f5f9; font-size: 14px; vertical-align: middle; color: #1f2937; }
         tr:last-child td { border-bottom: none; }
         tr:hover td { background: #f8fafc; }
-        .action-col { width: 150px; }
+        .status-action-col { width: 220px; }
         .select-col { width: 42px; }
-        .progress-col { width: 230px; }
+        .progress-col { width: 280px; }
+        .status-action-cell { vertical-align: middle; }
+        .status-action-wrapper { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
         .checkbox { width: 17px; height: 17px; cursor: pointer; accent-color: var(--primary); transition: transform 0.18s; }
         .checkbox:hover { transform: scale(1.08); }
         .progress-bar { height: 7px; background: #e2e8f0; border-radius: 999px; overflow: hidden; margin-top: 6px; }
@@ -126,14 +128,13 @@
             td { display: block; border: none; padding: 0; }
             td:nth-child(1) { position: absolute; top: 12px; right: 12px; }
             td:nth-child(2) { font-weight: 700; font-size: 15px; color: #0f172a; padding-right: 28px; margin-bottom: 8px; }
+            td:nth-child(3) { margin-bottom: 8px; }
+            td:nth-child(3) .status-action-wrapper { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
             td:nth-child(4) { margin-bottom: 10px; }
-            td:nth-child(3) { display: inline-block; margin-bottom: 0; float: left; padding-top: 4px; }
-            td:nth-child(5) { float: right; text-align: right; }
-            td:nth-child(5) .btn-group { justify-content: flex-end; }
             tr::after { content: ""; display: table; clear: both; }
             .select-col { width: auto; }
             .progress-col { width: auto; }
-            .action-col { width: auto; }
+            .status-action-col { width: auto; }
             .batch-bar { flex-direction: column; gap: 8px; padding: 10px 12px; margin-bottom: 10px; }
             .batch-info { font-size: 12px; gap: 12px; }
             .batch-actions { gap: 6px; }
@@ -208,9 +209,8 @@
                         <tr>
                             <th class="select-col"><input type="checkbox" id="headerCheckbox" onchange="toggleSelectAll()" class="checkbox"></th>
                             <th>任务/文件名</th>
-                            <th>状态</th>
+                            <th class="status-action-col">状态/操作</th>
                             <th class="progress-col">进度</th>
-                            <th class="action-col">操作</th>
                         </tr>
                     </thead>
                     <tbody id="taskList"></tbody>
@@ -494,7 +494,7 @@
                 
                 if (taskIds.length === 0) {
                     document.getElementById('taskList').innerHTML = 
-                        '<tr><td colspan="5" class="empty-state"><div class="empty-icon">📋</div>暂无任务记录</td></tr>';
+                        '<tr><td colspan="4" class="empty-state"><div class="empty-icon">📋</div>暂无任务记录</td></tr>';
                     document.getElementById('batchBar').style.display = 'none';
                     selectedTasks.clear();
                     return;
@@ -564,12 +564,11 @@
                     <tr>
                         <td><input type="checkbox" class="task-checkbox" data-task-id="${safeId}" onchange="toggleTaskSelect(this.dataset.taskId, this)" ${selectedTasks.has(id) ? 'checked' : ''}></td>
                         <td title="${safeName}">${safeName}</td>
-                        <td><span class="status ${statusClass}">${safeStatus}</span></td>
+                        <td class="status-action-cell"><div class="status-action-wrapper"><span class="status ${statusClass}">${safeStatus}</span>${btns}</div></td>
                         <td>
                             <div class="progress-bar"><div class="progress-fill" style="width:${Math.min(displayPercent, 100)}%"></div></div>
                             <div class="progress-text">${safeLog}</div>
                         </td>
-                        <td>${btns}</td>
                     </tr>`;
                 }
                 document.getElementById('taskList').innerHTML = html;
