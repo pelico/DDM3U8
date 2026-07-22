@@ -4,7 +4,6 @@ import threading
 import json
 import uuid
 import datetime
-import tarfile
 import shutil
 import signal
 import re
@@ -31,7 +30,6 @@ CONFIG = {
     "DB_PATH": "/downloads/tasks_history.json",
     "BIN_PATH": "yt-dlp",
     "DOWNLOAD_DIR": "/downloads",
-    "TEMP_EXTRACT_DIR": "/tmp/re_extract",
     "MAX_DOWNLOADS": int(os.environ.get("MAX_DOWNLOADS", 3))
 }
 
@@ -45,7 +43,7 @@ tasks = {}
 app = Flask(__name__)
 app.json.sort_keys = False
 
-ACTIVE_TASK_STATUSES = {'排队中', '下载中', '合并中', '等待FFmpeg'}
+ACTIVE_TASK_STATUSES = {'排队中', '下载中', '合并中', '等待FFmpeg', '移动中'}
 
 def log_info(msg):
     logger.info(msg)
@@ -87,14 +85,6 @@ def validate_config():
             log_error(f"无法创建下载目录 {CONFIG['DOWNLOAD_DIR']}: {e}")
             ok = False
     
-    if not os.path.exists(CONFIG["TEMP_EXTRACT_DIR"]):
-        try:
-            os.makedirs(CONFIG["TEMP_EXTRACT_DIR"], exist_ok=True)
-            logger.info(f"创建临时目录: {CONFIG['TEMP_EXTRACT_DIR']}")
-        except Exception as e:
-            log_error(f"无法创建临时目录 {CONFIG['TEMP_EXTRACT_DIR']}: {e}")
-            ok = False
-    
     if not shutil.which("ffmpeg"):
         logger.warning("⚠️ ffmpeg 暂未安装，服务将继续运行，等待后台安装完成后才能进行合并操作")
     else:
@@ -109,28 +99,8 @@ def validate_config():
         logger.info("配置验证完成")
     return ok
 
-def extract_and_setup(tar_path, dest_path):
-    temp_extract_dir = CONFIG["TEMP_EXTRACT_DIR"]
-    if os.path.exists(temp_extract_dir): shutil.rmtree(temp_extract_dir)
-    os.makedirs(temp_extract_dir, exist_ok=True)
-    bin_found = False
-    try:
-        with tarfile.open(tar_path, "r:gz") as tar:
-            tar.extractall(path=temp_extract_dir)
-            for item in os.listdir(temp_extract_dir):
-                if item.startswith("N_m3u8DL-RE") and not item.endswith(".md"):
-                    src_path = os.path.join(temp_extract_dir, item)
-                    shutil.move(src_path, dest_path)
-                    os.chmod(dest_path, 0o755)
-                    bin_found = True
-                    break
-    finally:
-        shutil.rmtree(temp_extract_dir, ignore_errors=True)
-    if not bin_found: log_info("[环境初始化] 未找到N_m3u8DL-RE")
-
 def fix_environment():
     os.makedirs(CONFIG["DOWNLOAD_DIR"], exist_ok=True)
-    os.makedirs(CONFIG["TEMP_EXTRACT_DIR"], exist_ok=True)
     
     if not shutil.which("ffmpeg"):
         log_info("[环境初始化] ffmpeg 未就绪，请检查镜像构建是否已安装 ffmpeg")
@@ -191,7 +161,7 @@ def load_tasks():
         with open(db_path, 'r', encoding='utf-8') as f:
             loaded = json.load(f)
         for tid, t in loaded.items():
-            if t.get('status') in ['下载中', '排队中', '合并中']:
+            if t.get('status') in ['下载中', '排队中', '合并中', '移动中']:
                 t['status'] = '已中断'
                 t['log'] = '系统重启导致中断，可点击恢复'
                 t['process'] = None
@@ -201,6 +171,28 @@ def load_tasks():
         BOOT_STATE["errors"].append(f"task_db_load_failed:{e}")
         _backup_corrupt_db(db_path)
         tasks = {}
+
+def cleanup_orphan_temp_dirs():
+    try:
+        download_dir = CONFIG["DOWNLOAD_DIR"]
+        if not os.path.exists(download_dir):
+            return
+        active_temp_dirs = set()
+        for t in tasks.values():
+            td = t.get('temp_dir')
+            if td:
+                active_temp_dirs.add(os.path.basename(td))
+        cleaned = 0
+        for item in os.listdir(download_dir):
+            if item.endswith('_temp') and item not in active_temp_dirs:
+                temp_path = os.path.join(download_dir, item)
+                if os.path.isdir(temp_path):
+                    shutil.rmtree(temp_path, ignore_errors=True)
+                    cleaned += 1
+        if cleaned > 0:
+            log_info(f"[启动清理] 清理了 {cleaned} 个残留临时目录")
+    except Exception as e:
+        log_error(f"[启动清理] 扫描残留目录失败: {e}")
 
 
 def run_environment_setup():
@@ -228,6 +220,7 @@ def boot():
     run_environment_setup()
     run_startup_validation()
     load_tasks()
+    cleanup_orphan_temp_dirs()
     refresh_boot_state()
     BOOT_STATE["phase"] = "ready"
     if BOOT_STATE["errors"]:
@@ -432,7 +425,7 @@ def index():
 @requires_auth
 def get_tasks():
     with TASK_LOCK:
-        active_workers = sum(1 for t in tasks.values() if t['status'] in ['下载中', '合并中'])
+        active_workers = sum(1 for t in tasks.values() if t['status'] in ['下载中', '合并中', '移动中'])
         ordered_items = sorted(
             tasks.items(),
             key=lambda item: item[1].get('created_at', ''),
@@ -551,6 +544,9 @@ def manage_task(task_id):
                     log_error(f"[任务管理] 终止进程失败: {e}")
             task['status'] = '已取消'
             task['log'] = '任务已取消'
+            temp_dir = task.get('temp_dir')
+            if temp_dir and os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir, ignore_errors=True)
     
     save_tasks()
     return '', 200
@@ -683,11 +679,19 @@ def start_task(url, name, task_id, download_dir=None):
         }
     save_tasks()
 
+_FFMPEG_CACHE = None
+
+def is_ffmpeg_ready():
+    global _FFMPEG_CACHE
+    if _FFMPEG_CACHE is None:
+        _FFMPEG_CACHE = shutil.which("ffmpeg") is not None
+    return _FFMPEG_CACHE
+
 def scheduler_loop():
     while True:
         try:
             with TASK_LOCK:
-                ffmpeg_ready = shutil.which("ffmpeg") is not None
+                ffmpeg_ready = is_ffmpeg_ready()
                 
                 if ffmpeg_ready:
                     for tid, t in tasks.items():
@@ -695,7 +699,7 @@ def scheduler_loop():
                             t['status'] = '排队中'
                             t['log'] = 'FFmpeg就绪，开始排队...'
                 
-                active_tasks = sum(1 for t in tasks.values() if t['status'] in ['下载中', '合并中'])
+                active_tasks = sum(1 for t in tasks.values() if t['status'] in ['下载中', '合并中', '移动中'])
                 if active_tasks < CONFIG["MAX_DOWNLOADS"]:
                     task_to_run = next(((tid, t) for tid, t in tasks.items() if t['status'] == '排队中'), None)
                     if task_to_run:
@@ -714,7 +718,7 @@ def scheduler_loop():
                                 task['log'] = '等待FFmpeg安装完成...'
         except Exception as e:
             log_error(f"[调度器异常] {e}")
-        time.sleep(1)
+        time.sleep(2)
 
 if __name__ == "__main__":
     logger.info("=== DDM3U8 服务启动 ===")
