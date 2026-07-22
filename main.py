@@ -362,16 +362,32 @@ def run_download(task_id, cmd):
             if task_id in tasks and tasks[task_id]['status'] == '下载中':
                 download_dir = tasks[task_id].get('download_dir', CONFIG["DOWNLOAD_DIR"])
                 temp_dir = tasks[task_id].get('temp_dir', os.path.join(download_dir, f"{task_name}_temp"))
-                mp4_file = os.path.join(download_dir, f"{task_name}.mp4")
+                temp_mp4 = os.path.join(temp_dir, f"{task_name}.mp4")
+                final_mp4 = os.path.join(download_dir, f"{task_name}.mp4")
                 
-                if process.returncode == 0 and os.path.exists(mp4_file):
-                    tasks[task_id]['status'] = '已完成'
-                    tasks[task_id]['log'] = '✅ 完整下载并合并成功'
-                    shutil.rmtree(temp_dir, ignore_errors=True)
+                if process.returncode == 0 and os.path.exists(temp_mp4):
+                    tasks[task_id]['status'] = '移动中'
+                    tasks[task_id]['log'] = '正在移动到目标目录...'
                 else:
                     reason = "进程报错中断" if process.returncode != 0 else "假成功(未生成MP4文件)"
                     tasks[task_id]['status'] = '错误'
                     tasks[task_id]['log'] = f'中断({reason})，可点[恢复]或[强合]'
+        
+        # 在锁外执行文件移动
+        if tasks.get(task_id, {}).get('status') == '移动中':
+            try:
+                shutil.move(temp_mp4, final_mp4)
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                with TASK_LOCK:
+                    if task_id in tasks:
+                        tasks[task_id]['status'] = '已完成'
+                        tasks[task_id]['log'] = '✅ 完整下载并合并成功'
+            except Exception as e:
+                log_error(f"[调度器] 移动文件失败: {e}")
+                with TASK_LOCK:
+                    if task_id in tasks:
+                        tasks[task_id]['status'] = '错误'
+                        tasks[task_id]['log'] = f'移动失败: {str(e)[:60]}'
     except Exception as e:
         log_error(f"[调度器] 任务 [{task_name}] 执行异常: {e}")
         with TASK_LOCK:
@@ -641,11 +657,10 @@ def start_task(url, name, task_id, download_dir=None):
         download_dir = CONFIG["DOWNLOAD_DIR"]
     temp_dir = os.path.join(download_dir, f"{name}_temp")
     os.makedirs(temp_dir, exist_ok=True)
-    output_file = os.path.join(download_dir, f"{name}.mp4")
+    temp_mp4 = os.path.join(temp_dir, f"{name}.mp4")
     cmd = [
         CONFIG["BIN_PATH"], url,
-        "-P", f"temp:{temp_dir}",
-        "-o", output_file,
+        "-o", temp_mp4,
         "--concurrent-fragments", "10",
         "--hls-prefer-native",
         "--no-part",
