@@ -641,14 +641,15 @@ def start_task(url, name, task_id, download_dir=None):
         download_dir = CONFIG["DOWNLOAD_DIR"]
     temp_dir = os.path.join(download_dir, f"{name}_temp")
     os.makedirs(temp_dir, exist_ok=True)
-    mp4_file = os.path.join(download_dir, f"{name}.mp4")
+    output_file = os.path.join(download_dir, f"{name}.mp4")
     cmd = [
         CONFIG["BIN_PATH"], url,
-        "-o", mp4_file,
         "-P", f"temp:{temp_dir}",
-        "--merge-output-format", "mp4",
+        "-o", output_file,
         "--concurrent-fragments", "10",
         "--hls-prefer-native",
+        "--no-part",
+        "--merge-output-format", "mp4",
         "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     ]
     with TASK_LOCK:
