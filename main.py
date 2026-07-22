@@ -361,17 +361,50 @@ def run_download(task_id, cmd):
         with TASK_LOCK:
             if task_id in tasks and tasks[task_id]['status'] == '下载中':
                 download_dir = tasks[task_id].get('download_dir', CONFIG["DOWNLOAD_DIR"])
-                expected_out_file = os.path.join(download_dir, f"{task_name}.mp4")
-                if process.returncode == 0 and os.path.exists(expected_out_file):
-                    tasks[task_id]['status'] = '已完成'
-                    tasks[task_id]['log'] = '✅ 完整下载并合并成功'
-                    # 清理临时文件夹
-                    temp_dir = os.path.join(download_dir, f"{task_name}_temp")
-                    shutil.rmtree(temp_dir, ignore_errors=True)
+                ts_file = os.path.join(download_dir, f"{task_name}.ts")
+                mp4_file = os.path.join(download_dir, f"{task_name}.mp4")
+                
+                if process.returncode == 0 and os.path.exists(ts_file):
+                    # yt-dlp 下载完成，调用 ffmpeg 快速封装为 MP4
+                    tasks[task_id]['status'] = '合并中'
+                    tasks[task_id]['log'] = '正在封装为 MP4...'
                 else:
-                    reason = "进程报错中断" if process.returncode != 0 else "假成功(未生成最终MP4)"
+                    reason = "进程报错中断" if process.returncode != 0 else "假成功(未生成TS文件)"
                     tasks[task_id]['status'] = '错误'
                     tasks[task_id]['log'] = f'中断({reason})，可点[恢复]或[强合]'
+        
+        # 在锁外执行 ffmpeg 转换
+        if tasks.get(task_id, {}).get('status') == '合并中':
+            try:
+                ffmpeg_cmd = [
+                    "ffmpeg", "-y", "-i", ts_file,
+                    "-c", "copy", "-bsf:a", "aac_adtstoasc",
+                    "-movflags", "+faststart",
+                    mp4_file
+                ]
+                ff_proc = subprocess.run(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300)
+                
+                if ff_proc.returncode == 0 and os.path.exists(mp4_file):
+                    os.remove(ts_file)
+                    with TASK_LOCK:
+                        if task_id in tasks:
+                            tasks[task_id]['status'] = '已完成'
+                            tasks[task_id]['log'] = '✅ 完整下载并合并成功'
+                else:
+                    with TASK_LOCK:
+                        if task_id in tasks:
+                            tasks[task_id]['status'] = '错误'
+                            tasks[task_id]['log'] = 'FFmpeg 封装失败'
+            except Exception as e:
+                log_error(f"[调度器] FFmpeg 封装失败: {e}")
+                with TASK_LOCK:
+                    if task_id in tasks:
+                        tasks[task_id]['status'] = '错误'
+                        tasks[task_id]['log'] = f'封装失败: {str(e)[:60]}'
+            finally:
+                # 清理临时文件夹
+                temp_dir = os.path.join(download_dir, f"{task_name}_temp")
+                shutil.rmtree(temp_dir, ignore_errors=True)
     except Exception as e:
         log_error(f"[调度器] 任务 [{task_name}] 执行异常: {e}")
         with TASK_LOCK:
@@ -641,15 +674,13 @@ def start_task(url, name, task_id, download_dir=None):
         download_dir = CONFIG["DOWNLOAD_DIR"]
     temp_dir = os.path.join(download_dir, f"{name}_temp")
     os.makedirs(temp_dir, exist_ok=True)
-    output_file = os.path.join(download_dir, f"{name}.mp4")
+    output_file = os.path.join(download_dir, f"{name}.ts")
     cmd = [
         CONFIG["BIN_PATH"], url,
         "-P", f"temp:{temp_dir}",
         "-o", output_file,
         "--concurrent-fragments", "10",
         "--hls-prefer-native",
-        "--no-part",
-        "--merge-output-format", "mp4",
         "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     ]
     with TASK_LOCK:
