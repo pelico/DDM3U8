@@ -369,8 +369,14 @@ def run_download(task_id, cmd):
         # 在锁外执行文件移动
         if tasks.get(task_id, {}).get('status') == '移动中':
             try:
+                for item in os.listdir(temp_dir):
+                    if item.endswith('.temp.mp4') or item.endswith('.part'):
+                        os.remove(os.path.join(temp_dir, item))
                 shutil.move(temp_mp4, final_mp4)
                 shutil.rmtree(temp_dir, ignore_errors=True)
+                for item in os.listdir(download_dir):
+                    if item.endswith('.temp.mp4') or '.part-Frag' in item:
+                        os.remove(os.path.join(download_dir, item))
                 with TASK_LOCK:
                     if task_id in tasks:
                         tasks[task_id]['status'] = '已完成'
