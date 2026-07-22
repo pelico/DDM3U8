@@ -339,7 +339,7 @@ def run_download(task_id, cmd):
         temp_dir = tasks.get(task_id, {}).get('temp_dir', CONFIG["DOWNLOAD_DIR"])
         env['TMPDIR'] = temp_dir
         
-        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, encoding='utf-8', errors='ignore', env=env)
+        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, encoding='utf-8', errors='ignore', env=env, cwd=temp_dir)
         
         with TASK_LOCK:
             tasks[task_id]['process'] = process
