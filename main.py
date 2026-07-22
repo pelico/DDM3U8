@@ -361,7 +361,8 @@ def run_download(task_id, cmd):
         with TASK_LOCK:
             if task_id in tasks and tasks[task_id]['status'] == '下载中':
                 download_dir = tasks[task_id].get('download_dir', CONFIG["DOWNLOAD_DIR"])
-                ts_file = os.path.join(download_dir, f"{task_name}.ts")
+                temp_dir = tasks[task_id].get('temp_dir', os.path.join(download_dir, f"{task_name}_temp"))
+                ts_file = os.path.join(temp_dir, f"{task_name}.ts")
                 mp4_file = os.path.join(download_dir, f"{task_name}.mp4")
                 
                 if process.returncode == 0 and os.path.exists(ts_file):
@@ -674,11 +675,10 @@ def start_task(url, name, task_id, download_dir=None):
         download_dir = CONFIG["DOWNLOAD_DIR"]
     temp_dir = os.path.join(download_dir, f"{name}_temp")
     os.makedirs(temp_dir, exist_ok=True)
-    output_file = os.path.join(download_dir, f"{name}.ts")
+    ts_file = os.path.join(temp_dir, f"{name}.ts")
     cmd = [
         CONFIG["BIN_PATH"], url,
-        "-P", f"temp:{temp_dir}",
-        "-o", output_file,
+        "-o", ts_file,
         "--concurrent-fragments", "10",
         "--hls-prefer-native",
         "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
