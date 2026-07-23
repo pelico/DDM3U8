@@ -51,6 +51,14 @@ app.json.sort_keys = False
 
 ACTIVE_TASK_STATUSES = {'排队中', '下载中', '合并中', '等待FFmpeg'}
 
+_FFMPEG_CACHE = None
+
+def is_ffmpeg_ready():
+    global _FFMPEG_CACHE
+    if _FFMPEG_CACHE is None:
+        _FFMPEG_CACHE = shutil.which("ffmpeg") is not None
+    return _FFMPEG_CACHE
+
 def log_info(msg):
     logger.info(msg)
 
@@ -220,6 +228,29 @@ def load_tasks():
         _backup_corrupt_db(db_path)
         tasks = {}
 
+def cleanup_orphan_temp_dirs():
+    """清理无主的临时目录（容器重启后的残留文件）"""
+    try:
+        download_dir = CONFIG["DOWNLOAD_DIR"]
+        if not os.path.exists(download_dir):
+            return
+        active_temp_dirs = set()
+        for t in tasks.values():
+            td = t.get('temp_dir')
+            if td:
+                active_temp_dirs.add(os.path.basename(td))
+        cleaned = 0
+        for item in os.listdir(download_dir):
+            if item.endswith('_temp') and item not in active_temp_dirs:
+                temp_path = os.path.join(download_dir, item)
+                if os.path.isdir(temp_path):
+                    shutil.rmtree(temp_path, ignore_errors=True)
+                    cleaned += 1
+        if cleaned > 0:
+            log_info(f"[启动清理] 清理了 {cleaned} 个残留临时目录")
+    except Exception as e:
+        log_error(f"[启动清理] 扫描残留目录失败: {e}")
+
 
 def run_environment_setup():
     BOOT_STATE["phase"] = "environment"
@@ -246,6 +277,7 @@ def boot():
     run_environment_setup()
     run_startup_validation()
     load_tasks()
+    cleanup_orphan_temp_dirs()
     refresh_boot_state()
     BOOT_STATE["phase"] = "ready"
     if BOOT_STATE["errors"]:
@@ -303,7 +335,7 @@ def execute_merge_logic(task_id, target_tmp_dir, final_out_file, log_title):
         for line in iter(process.stdout.readline, ''):
             if "time=" in line or "fps=" in line:
                 with TASK_LOCK:
-                    if task_id in tasks: tasks[task_id]['log'] = line.strip()[-60:]
+                    if task_id in tasks: tasks[task_id]['log'] = line.strip()[-100:]
         
         process.wait()
 
@@ -370,7 +402,7 @@ def run_download(task_id, cmd):
                     break
                 log_content = line.strip()
                 if "%" in log_content or "B/s" in log_content: 
-                    tasks[task_id]['log'] = log_content[-60:]
+                    tasks[task_id]['log'] = log_content[-100:]
         
         # 等待进程结束
         process.wait()
@@ -549,6 +581,9 @@ def manage_task(task_id):
                     log_error(f"[任务管理] 终止进程失败: {e}")
             task['status'] = '已取消'
             task['log'] = '任务已取消'
+            temp_dir = task.get('temp_dir')
+            if temp_dir and os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir, ignore_errors=True)
     
     save_tasks()
     return '', 200
@@ -680,10 +715,8 @@ def scheduler_loop():
     while True:
         try:
             with TASK_LOCK:
-                # 检查 ffmpeg 是否可用
-                ffmpeg_ready = shutil.which("ffmpeg") is not None
+                ffmpeg_ready = is_ffmpeg_ready()
                 
-                # 更新等待 ffmpeg 的任务状态
                 if ffmpeg_ready:
                     for tid, t in tasks.items():
                         if t['status'] == '等待FFmpeg':
@@ -695,7 +728,6 @@ def scheduler_loop():
                     task_to_run = next(((tid, t) for tid, t in tasks.items() if t['status'] == '排队中'), None)
                     if task_to_run:
                         tid, task = task_to_run
-                        # 对于需要合并的下载任务，检查 ffmpeg 是否就绪
                         if task.get('cmd'):
                             if ffmpeg_ready:
                                 threading.Thread(target=run_download, args=(tid, task['cmd'])).start()
@@ -703,7 +735,6 @@ def scheduler_loop():
                                 task['status'] = '等待FFmpeg'
                                 task['log'] = '等待FFmpeg安装完成...'
                         else:
-                            # 本地合并任务必须等待 ffmpeg
                             if ffmpeg_ready:
                                 threading.Thread(target=run_local_merge_tool, args=(tid, task['folder_target'])).start()
                             else:
@@ -711,7 +742,7 @@ def scheduler_loop():
                                 task['log'] = '等待FFmpeg安装完成...'
         except Exception as e:
             log_error(f"[调度器异常] {e}")
-        time.sleep(1)
+        time.sleep(2)
 
 if __name__ == "__main__":
     logger.info("=== DDM3U8 服务启动 ===")
