@@ -277,7 +277,7 @@ def execute_merge_logic(task_id, target_tmp_dir, final_out_file, log_title):
         for line in iter(process.stdout.readline, ''):
             if "time=" in line or "fps=" in line:
                 with TASK_LOCK:
-                    if task_id in tasks: tasks[task_id]['log'] = line.strip()[-60:]
+                    if task_id in tasks: tasks[task_id]['log'] = line.strip()[-100:]
         
         process.wait()
 
@@ -347,7 +347,7 @@ def run_download(task_id, cmd):
                     break
                 log_content = line.strip()
                 if "%" in log_content or "B/s" in log_content or "downloading" in log_content.lower(): 
-                    tasks[task_id]['log'] = log_content[-60:]
+                    tasks[task_id]['log'] = log_content[-100:]
         
         process.wait()
         
