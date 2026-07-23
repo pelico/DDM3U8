@@ -355,20 +355,51 @@ def run_download(task_id, cmd):
             if task_id in tasks and tasks[task_id]['status'] == '下载中':
                 download_dir = tasks[task_id].get('download_dir', CONFIG["DOWNLOAD_DIR"])
                 temp_dir = tasks[task_id].get('temp_dir', os.path.join(download_dir, f"{task_name}_temp"))
-                temp_mp4 = os.path.join(temp_dir, f"{task_name}.mp4")
+                temp_ts = os.path.join(temp_dir, f"{task_name}.ts")
                 final_mp4 = os.path.join(download_dir, f"{task_name}.mp4")
                 
-                if process.returncode == 0 and os.path.exists(temp_mp4):
-                    tasks[task_id]['status'] = '移动中'
-                    tasks[task_id]['log'] = '正在移动到目标目录...'
+                if process.returncode == 0 and os.path.exists(temp_ts):
+                    tasks[task_id]['status'] = '合并中'
+                    tasks[task_id]['log'] = '正在封装为MP4...'
                 else:
-                    reason = "进程报错中断" if process.returncode != 0 else "假成功(未生成MP4文件)"
+                    reason = "进程报错中断" if process.returncode != 0 else "假成功(未生成TS文件)"
                     tasks[task_id]['status'] = '错误'
                     tasks[task_id]['log'] = f'中断({reason})，可点[恢复]或[强合]'
+        
+        # 在锁外执行 ffmpeg remux
+        if tasks.get(task_id, {}).get('status') == '合并中':
+            try:
+                temp_dir = tasks[task_id].get('temp_dir', os.path.join(CONFIG["DOWNLOAD_DIR"], f"{task_name}_temp"))
+                temp_ts = os.path.join(temp_dir, f"{task_name}.ts")
+                final_mp4 = os.path.join(CONFIG["DOWNLOAD_DIR"] if tasks[task_id].get('download_dir') is None else tasks[task_id]['download_dir'], f"{task_name}.mp4")
+                temp_mp4 = os.path.join(temp_dir, f"{task_name}.mp4")
+                
+                ffmpeg_cmd = ["ffmpeg", "-y", "-i", temp_ts, "-c", "copy", "-bsf:a", "aac_adtstoasc", "-movflags", "+faststart", temp_mp4]
+                ffmpeg_proc = subprocess.run(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='ignore')
+                
+                if ffmpeg_proc.returncode == 0 and os.path.exists(temp_mp4):
+                    os.remove(temp_ts)
+                    with TASK_LOCK:
+                        if task_id in tasks:
+                            tasks[task_id]['status'] = '移动中'
+                            tasks[task_id]['log'] = '正在移动到目标目录...'
+                else:
+                    raise Exception(f"ffmpeg封装失败: returncode={ffmpeg_proc.returncode}")
+            except Exception as e:
+                log_error(f"[调度器] ffmpeg封装失败: {e}")
+                with TASK_LOCK:
+                    if task_id in tasks:
+                        tasks[task_id]['status'] = '错误'
+                        tasks[task_id]['log'] = f'封装失败: {str(e)[:60]}'
         
         # 在锁外执行文件移动
         if tasks.get(task_id, {}).get('status') == '移动中':
             try:
+                download_dir = tasks[task_id].get('download_dir', CONFIG["DOWNLOAD_DIR"])
+                temp_dir = tasks[task_id].get('temp_dir', os.path.join(download_dir, f"{task_name}_temp"))
+                temp_mp4 = os.path.join(temp_dir, f"{task_name}.mp4")
+                final_mp4 = os.path.join(download_dir, f"{task_name}.mp4")
+                
                 shutil.move(temp_mp4, final_mp4)
                 shutil.rmtree(temp_dir, ignore_errors=True)
                 with TASK_LOCK:
@@ -653,22 +684,13 @@ def start_task(url, name, task_id, download_dir=None):
         download_dir = CONFIG["DOWNLOAD_DIR"]
     temp_dir = os.path.join(download_dir, f"{name}_temp")
     os.makedirs(temp_dir, exist_ok=True)
-    temp_mp4 = os.path.join(temp_dir, f"{name}.mp4")
+    temp_ts = os.path.join(temp_dir, f"{name}.ts")
     cmd = [
         CONFIG["BIN_PATH"], url,
-        "-o", temp_mp4,
-        "--downloader", "m3u8:ffmpeg",
-        "--hls-prefer-ffmpeg",
+        "-o", temp_ts,
         "--concurrent-fragments", "10",
-        "--no-mtime",
-        "--no-continue",
-        "--force-overwrites",
-        "--no-keep-video",
-        "--no-write-info-json",
-        "--no-write-thumbnail",
-        "--no-embed-chapters",
-        "--no-embed-info-json",
-        "--no-embed-subs",
+        "--hls-prefer-native",
+        "--no-part",
         "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     ]
     with TASK_LOCK:
