@@ -657,9 +657,18 @@ def start_task(url, name, task_id, download_dir=None):
     cmd = [
         CONFIG["BIN_PATH"], url,
         "-o", temp_mp4,
+        "--downloader", "m3u8:ffmpeg",
+        "--hls-prefer-ffmpeg",
         "--concurrent-fragments", "10",
-        "--hls-prefer-native",
-        "--no-part",
+        "--no-mtime",
+        "--no-continue",
+        "--force-overwrites",
+        "--no-keep-video",
+        "--no-write-info-json",
+        "--no-write-thumbnail",
+        "--no-embed-chapters",
+        "--no-embed-info-json",
+        "--no-embed-subs",
         "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     ]
     with TASK_LOCK:
