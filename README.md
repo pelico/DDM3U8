@@ -5,10 +5,14 @@ DDM3U8 是一个轻量的 Web M3U8 下载工具，基于 Flask 和 N_m3u8DL-RE�
 当前镜像路线：
 
 - 基础镜像：`python:3.11-alpine`
-- 下载核心：`N_m3u8DL-RE`
 - 合并工具：`ffmpeg`
-- 支持架构：`linux/amd64`、`linux/arm64`
-- 不支持：`armv7l`
+- 支持架构：`linux/amd64`、`linux/arm64`、`linux/armv7l`
+
+| 架构 | 镜像标签 | 下载核心 |
+|------|----------|----------|
+| amd64 / arm64 | `latest` | N_m3u8DL-RE |
+| armv7l | `armv7l` | yt-dlp |
+
 <img width="1479" height="1300" alt="image" src="https://github.com/user-attachments/assets/e33d424b-e709-46fd-a2f3-d36fba1b8088" />
 
 ## 功能
@@ -17,19 +21,21 @@ DDM3U8 是一个轻量的 Web M3U8 下载工具，基于 Flask 和 N_m3u8DL-RE�
 - 支持 Basic Auth 访问保护
 - 支持并发下载数量限制
 - 下载任务状态自动刷新
-- 支持 `/downloads` 保存视频。
+- 支持 `/downloads` 保存视频
+- 本地缓存合并工具
+- 容器重启后自动恢复任务
 
 
 ## 快速运行
+
+### amd64 / arm64 架构
+
+```bash
 docker pull ghcr.io/pelico/ddm3u8:latest
 
-直接拉取镜像速度很慢，可以试试。
-ghcr.io
-替换为
-ghcr.nju.edu.cn
-
+# 国内镜像加速
 docker pull ghcr.nju.edu.cn/pelico/ddm3u8:latest
-
+```
 
 ```bash
 docker run -d \
@@ -42,6 +48,30 @@ docker run -d \
   --restart unless-stopped \
   ghcr.io/pelico/ddm3u8:latest
 ```
+
+### armv7l 架构
+
+```bash
+docker pull ghcr.io/pelico/ddm3u8:armv7l
+
+# 国内镜像加速
+docker pull ghcr.nju.edu.cn/pelico/ddm3u8:armv7l
+```
+
+```bash
+docker run -d \
+  --name ddm3u8 \
+  -p 8080:8080 \
+  -v ./downloads:/downloads \
+  -e TZ=Asia/Shanghai \
+  -e MAX_DOWNLOADS=2 \
+  -e WEB_USER=admin \
+  -e WEB_PASS=admin \
+  --restart unless-stopped \
+  ghcr.io/pelico/ddm3u8:armv7l
+```
+
+> **armv7l 版本说明**：使用 yt-dlp 替代 N_m3u8DL-RE 作为下载核心，功能与主版本一致。建议将 `MAX_DOWNLOADS` 设为 2 以适应 arm 设备性能。
 
 浏览器访问：
 
@@ -86,7 +116,7 @@ curl -u admin:admin http://localhost:8080/health
 curl -u admin:admin http://localhost:8080/ready
 ```
 
-`/ready` 会返回 ffmpeg、N_m3u8DL-RE、下载目录、任务记录加载状态。
+`/ready` 会返回 ffmpeg、下载核心（N_m3u8DL-RE 或 yt-dlp）、下载目录、任务记录加载状态。
 
 
 ## 注意事项
