@@ -10,6 +10,7 @@ import signal
 import re
 import time
 import logging
+from collections import deque
 from flask import Flask, request, jsonify, render_template
 from functools import wraps
 from dotenv import load_dotenv
@@ -331,12 +332,21 @@ def execute_merge_logic(task_id, target_tmp_dir, final_out_file, log_title):
         
         merge_cmd = ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", "input.txt", "-c", "copy", final_out_file]
         process = subprocess.Popen(merge_cmd, cwd=target_sub_dir, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='ignore')
-        
+
+        # 保留尾部输出，便于失败时定位 FFmpeg 真实报错（退出码本身只是低字节，看不出原因）
+        tail_lines = deque(maxlen=20)
         for line in iter(process.stdout.readline, ''):
-            if "time=" in line or "fps=" in line:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            tail_lines.append(stripped)
+            if "time=" in stripped or "fps=" in stripped:
                 with TASK_LOCK:
-                    if task_id in tasks: tasks[task_id]['log'] = line.strip()[-100:]
-        
+                    if task_id in tasks: tasks[task_id]['log'] = stripped[-100:]
+            elif any(k in stripped for k in ("Error", "error", "Conversion failed", "No space", "Invalid", "failed")):
+                with TASK_LOCK:
+                    if task_id in tasks: tasks[task_id]['log'] = stripped[-100:]
+
         process.wait()
 
         with TASK_LOCK:
@@ -346,8 +356,9 @@ def execute_merge_logic(task_id, target_tmp_dir, final_out_file, log_title):
                     tasks[task_id]['log'] = f'⚠️ 成功合并 {len(ts_files_in_order)} 个碎片'
                     shutil.rmtree(target_tmp_dir, ignore_errors=True)
                 else:
+                    tail_log = " | ".join(tail_lines)[-300:]
                     tasks[task_id]['status'] = '错误'
-                    tasks[task_id]['log'] = f'❌ FFmpeg拒绝合并(退出码:{process.returncode})'
+                    tasks[task_id]['log'] = f'❌ FFmpeg拒绝合并(退出码:{process.returncode}) 尾部日志: {tail_log}'
     except Exception as e:
         with TASK_LOCK:
             if task_id in tasks:
