@@ -43,7 +43,7 @@ tasks = {}
 app = Flask(__name__)
 app.json.sort_keys = False
 
-ACTIVE_TASK_STATUSES = {'排队中', '下载中', '合并中', '等待FFmpeg', '移动中'}
+ACTIVE_TASK_STATUSES = {'排队中', '下载中', '合并中', '等待FFmpeg'}
 
 def log_info(msg):
     logger.info(msg)
@@ -366,23 +366,24 @@ def run_download(task_id, cmd):
                     tasks[task_id]['status'] = '错误'
                     tasks[task_id]['log'] = f'中断({reason})，可点[恢复]或[强合]'
         
-        # 在锁外执行 ffmpeg remux
+        # 在锁外执行 ffmpeg remux，直接输出到目标目录
         if tasks.get(task_id, {}).get('status') == '合并中':
             try:
-                temp_dir = tasks[task_id].get('temp_dir', os.path.join(CONFIG["DOWNLOAD_DIR"], f"{task_name}_temp"))
+                download_dir = tasks[task_id].get('download_dir', CONFIG["DOWNLOAD_DIR"])
+                temp_dir = tasks[task_id].get('temp_dir', os.path.join(download_dir, f"{task_name}_temp"))
                 temp_ts = os.path.join(temp_dir, f"{task_name}.ts")
-                final_mp4 = os.path.join(CONFIG["DOWNLOAD_DIR"] if tasks[task_id].get('download_dir') is None else tasks[task_id]['download_dir'], f"{task_name}.mp4")
-                temp_mp4 = os.path.join(temp_dir, f"{task_name}.mp4")
+                final_mp4 = os.path.join(download_dir, f"{task_name}.mp4")
                 
-                ffmpeg_cmd = ["ffmpeg", "-y", "-i", temp_ts, "-c", "copy", "-bsf:a", "aac_adtstoasc", "-movflags", "+faststart", temp_mp4]
+                ffmpeg_cmd = ["ffmpeg", "-y", "-i", temp_ts, "-c", "copy", "-bsf:a", "aac_adtstoasc", "-movflags", "+faststart", final_mp4]
                 ffmpeg_proc = subprocess.run(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='ignore')
                 
-                if ffmpeg_proc.returncode == 0 and os.path.exists(temp_mp4):
+                if ffmpeg_proc.returncode == 0 and os.path.exists(final_mp4):
                     os.remove(temp_ts)
+                    shutil.rmtree(temp_dir, ignore_errors=True)
                     with TASK_LOCK:
                         if task_id in tasks:
-                            tasks[task_id]['status'] = '移动中'
-                            tasks[task_id]['log'] = '正在移动到目标目录...'
+                            tasks[task_id]['status'] = '已完成'
+                            tasks[task_id]['log'] = '✅ 完整下载并合并成功'
                 else:
                     raise Exception(f"ffmpeg封装失败: returncode={ffmpeg_proc.returncode}")
             except Exception as e:
@@ -391,27 +392,6 @@ def run_download(task_id, cmd):
                     if task_id in tasks:
                         tasks[task_id]['status'] = '错误'
                         tasks[task_id]['log'] = f'封装失败: {str(e)[:60]}'
-        
-        # 在锁外执行文件移动
-        if tasks.get(task_id, {}).get('status') == '移动中':
-            try:
-                download_dir = tasks[task_id].get('download_dir', CONFIG["DOWNLOAD_DIR"])
-                temp_dir = tasks[task_id].get('temp_dir', os.path.join(download_dir, f"{task_name}_temp"))
-                temp_mp4 = os.path.join(temp_dir, f"{task_name}.mp4")
-                final_mp4 = os.path.join(download_dir, f"{task_name}.mp4")
-                
-                shutil.move(temp_mp4, final_mp4)
-                shutil.rmtree(temp_dir, ignore_errors=True)
-                with TASK_LOCK:
-                    if task_id in tasks:
-                        tasks[task_id]['status'] = '已完成'
-                        tasks[task_id]['log'] = '✅ 完整下载并合并成功'
-            except Exception as e:
-                log_error(f"[调度器] 移动文件失败: {e}")
-                with TASK_LOCK:
-                    if task_id in tasks:
-                        tasks[task_id]['status'] = '错误'
-                        tasks[task_id]['log'] = f'移动失败: {str(e)[:60]}'
     except Exception as e:
         log_error(f"[调度器] 任务 [{task_name}] 执行异常: {e}")
         with TASK_LOCK:
@@ -456,7 +436,7 @@ def index():
 @requires_auth
 def get_tasks():
     with TASK_LOCK:
-        active_workers = sum(1 for t in tasks.values() if t['status'] in ['下载中', '合并中', '移动中'])
+        active_workers = sum(1 for t in tasks.values() if t['status'] in ['下载中', '合并中'])
         ordered_items = sorted(
             tasks.items(),
             key=lambda item: item[1].get('created_at', ''),
@@ -691,6 +671,7 @@ def start_task(url, name, task_id, download_dir=None):
         "--concurrent-fragments", "10",
         "--hls-prefer-native",
         "--no-part",
+        "--fixup", "never",
         "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     ]
     with TASK_LOCK:
@@ -729,7 +710,7 @@ def scheduler_loop():
                             t['status'] = '排队中'
                             t['log'] = 'FFmpeg就绪，开始排队...'
                 
-                active_tasks = sum(1 for t in tasks.values() if t['status'] in ['下载中', '合并中', '移动中'])
+                active_tasks = sum(1 for t in tasks.values() if t['status'] in ['下载中', '合并中'])
                 if active_tasks < CONFIG["MAX_DOWNLOADS"]:
                     task_to_run = next(((tid, t) for tid, t in tasks.items() if t['status'] == '排队中'), None)
                     if task_to_run:
