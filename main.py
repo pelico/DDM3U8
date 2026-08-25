@@ -360,9 +360,10 @@ def run_manual_merge(task_id, task_name):
     with TASK_LOCK:
         if task_id not in tasks: return
         tasks[task_id]['status'] = '合并中'
+        download_dir = tasks[task_id].get('download_dir', CONFIG["DOWNLOAD_DIR"])
     save_tasks()
-    tmp_dir = os.path.join(CONFIG["DOWNLOAD_DIR"], task_name)
-    out_file = os.path.join(CONFIG["DOWNLOAD_DIR"], f"{task_name}.mp4")
+    tmp_dir = os.path.join(download_dir, f"{task_name}_temp")
+    out_file = os.path.join(download_dir, f"{task_name}.mp4")
     execute_merge_logic(task_id, tmp_dir, out_file, "手动强合")
 
 def run_local_merge_tool(task_id, folder_name):
@@ -409,7 +410,8 @@ def run_download(task_id, cmd):
         
         with TASK_LOCK:
             if task_id in tasks and tasks[task_id]['status'] == '下载中':
-                expected_out_file = os.path.join(CONFIG["DOWNLOAD_DIR"], f"{task_name}.mp4")
+                download_dir = tasks[task_id].get('download_dir', CONFIG["DOWNLOAD_DIR"])
+                expected_out_file = os.path.join(download_dir, f"{task_name}.mp4")
                 if process.returncode == 0 and os.path.exists(expected_out_file):
                     tasks[task_id]['status'] = '已完成'
                     tasks[task_id]['log'] = '✅ 完整下载并合并成功'
@@ -696,6 +698,7 @@ def start_task(url, name, task_id, download_dir=None):
         "-M", "format=mp4",
         "--thread-count", "10"
     ]
+    temp_dir = os.path.join(download_dir, f"{name}_temp")
     with TASK_LOCK:
         if GLOBAL_REFERER: 
             cmd.extend(["--header", f"Referer:{GLOBAL_REFERER}"])
@@ -707,7 +710,8 @@ def start_task(url, name, task_id, download_dir=None):
             'log': '准备中...', 
             'created_at': datetime.datetime.now().isoformat(timespec='seconds'),
             'process': None,
-            'download_dir': download_dir
+            'download_dir': download_dir,
+            'temp_dir': temp_dir
         }
     save_tasks()
 
