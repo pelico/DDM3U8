@@ -49,7 +49,9 @@ tasks = {}
 app = Flask(__name__)
 app.json.sort_keys = False
 
-ACTIVE_TASK_STATUSES = {'排队中', '下载中', '合并中', '等待FFmpeg'}
+ACTIVE_TASK_STATUSES = {'排队中', '下载中', '合并中', '等待FFmpeg', '转换中'}
+
+VIDEO_EXTENSIONS = {'.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.ts', '.mpg', '.mpeg', '.rmvb', '.rm'}
 
 _FFMPEG_CACHE = None
 
@@ -217,7 +219,7 @@ def load_tasks():
         with open(db_path, 'r', encoding='utf-8') as f:
             loaded = json.load(f)
         for tid, t in loaded.items():
-            if t.get('status') in ['下载中', '排队中', '合并中']:
+            if t.get('status') in ['下载中', '排队中', '合并中', '转换中']:
                 t['status'] = '已中断'
                 t['log'] = '系统重启导致中断，可点击恢复'
                 t['process'] = None
@@ -376,6 +378,59 @@ def run_local_merge_tool(task_id, folder_name):
     out_file = os.path.join(CONFIG["DOWNLOAD_DIR"], f"{safe_folder}_merged.mp4")
     execute_merge_logic(task_id, tmp_dir, out_file, "工具强合")
 
+def run_audio_extract(task_id, audio_target):
+    """audio_target: dict with keys: input_path, output_path"""
+    input_path = audio_target['input_path']
+    output_path = audio_target['output_path']
+    task_name = tasks.get(task_id, {}).get('name', 'Unknown')
+    log_info(f"[音频提取] 任务 [{task_name}] 开始: {os.path.basename(input_path)}")
+    try:
+        with TASK_LOCK:
+            if task_id in tasks:
+                tasks[task_id]['status'] = '转换中'
+                tasks[task_id]['process'] = None
+        save_tasks()
+
+        cmd = ["ffmpeg", "-y", "-i", input_path, "-vn", "-acodec", "aac", "-b:a", "192k", output_path]
+        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='ignore')
+
+        with TASK_LOCK:
+            if task_id in tasks:
+                tasks[task_id]['process'] = process
+
+        for line in iter(process.stdout.readline, ''):
+            with TASK_LOCK:
+                if task_id not in tasks:
+                    break
+                if tasks[task_id].get('status') != '转换中':
+                    break
+                if "time=" in line or "size=" in line:
+                    tasks[task_id]['log'] = line.strip()[-100:]
+
+        process.wait()
+
+        with TASK_LOCK:
+            if task_id in tasks:
+                if process.returncode == 0 and os.path.exists(output_path):
+                    tasks[task_id]['status'] = '完成(音频)'
+                    tasks[task_id]['log'] = f'✅ 音频提取成功: {os.path.basename(output_path)}'
+                else:
+                    tasks[task_id]['status'] = '错误'
+                    tasks[task_id]['log'] = f'❌ FFmpeg转换失败(退出码:{process.returncode})'
+    except Exception as e:
+        log_error(f"[音频提取] 任务 [{task_name}] 异常: {e}")
+        with TASK_LOCK:
+            if task_id in tasks:
+                tasks[task_id]['status'] = '错误'
+                tasks[task_id]['log'] = str(e)[:100]
+    finally:
+        with TASK_LOCK:
+            if task_id in tasks:
+                tasks[task_id]['process'] = None
+        if 'process' in locals() and process.stdout:
+            process.stdout.close()
+        save_tasks()
+
 def run_download(task_id, cmd):
     task_name = tasks.get(task_id, {}).get('name', 'Unknown')
     log_info(f"[调度器] 任务 [{task_name}] 开始执行")
@@ -464,7 +519,7 @@ def index():
 @requires_auth
 def get_tasks():
     with TASK_LOCK:
-        active_workers = sum(1 for t in tasks.values() if t['status'] in ['下载中', '合并中'])
+        active_workers = sum(1 for t in tasks.values() if t['status'] in ['下载中', '合并中', '转换中'])
         ordered_items = sorted(
             tasks.items(),
             key=lambda item: item[1].get('created_at', ''),
@@ -502,11 +557,39 @@ def get_folders():
         log_error(f"获取文件夹列表失败: {e}")
         return jsonify({"folders": []})
 
+@app.route('/api/video_files')
+@requires_auth
+def get_video_files():
+    try:
+        base_dir = CONFIG["DOWNLOAD_DIR"]
+        videos = []
+        for root, dirs, files in os.walk(base_dir):
+            dirs[:] = [d for d in dirs if not d.startswith('.')]
+            for f in files:
+                ext = os.path.splitext(f)[1].lower()
+                if ext in VIDEO_EXTENSIONS:
+                    full_path = os.path.join(root, f)
+                    try:
+                        size = os.path.getsize(full_path)
+                    except:
+                        size = 0
+                    rel_path = os.path.relpath(full_path, base_dir)
+                    videos.append({
+                        "name": f,
+                        "path": rel_path.replace('\\', '/'),
+                        "size": size
+                    })
+        videos.sort(key=lambda v: v['name'].lower())
+        return jsonify({"videos": videos})
+    except Exception as e:
+        log_error(f"获取视频文件列表失败: {e}")
+        return jsonify({"videos": []})
+
 @app.route('/api/clear', methods=['POST'])
 @requires_auth
 def clear_tasks():
     with TASK_LOCK:
-        to_delete = [tid for tid, t in tasks.items() if t['status'] not in ['下载中', '排队中', '合并中']]
+        to_delete = [tid for tid, t in tasks.items() if t['status'] not in ['下载中', '排队中', '合并中', '转换中']]
         for tid in to_delete: tasks.pop(tid, None)
     save_tasks()
     return '', 200
@@ -521,7 +604,7 @@ def clear_selected_tasks():
         log_error(f"解析请求体失败: {e}")
         return '', 400
     with TASK_LOCK:
-        to_delete = [tid for tid in ids if tid in tasks and tasks[tid]['status'] not in ['下载中', '排队中', '合并中']]
+        to_delete = [tid for tid in ids if tid in tasks and tasks[tid]['status'] not in ['下载中', '排队中', '合并中', '转换中']]
         for tid in to_delete: tasks.pop(tid, None)
     save_tasks()
     return jsonify({"deleted": len(to_delete)}), 200
@@ -556,7 +639,7 @@ def manage_task(task_id):
             except Exception as e:
                 log_error(f"[任务管理] 暂停任务失败: {e}")
         
-        elif action == 'resume' and task.get('cmd'):
+        elif action == 'resume' and (task.get('cmd') or task.get('audio_target')):
             log_info(f"[任务管理] 恢复任务: {task_id}")
             task['status'] = '排队中'
             task['log'] = '正在重新排队...'
@@ -686,6 +769,60 @@ def local_merge():
         log_error(f"创建本地合并任务失败: {e}")
         return jsonify({"error": str(e)}), 500
 
+@app.route('/api/audio_extract', methods=['POST'])
+@requires_auth
+def audio_extract():
+    try:
+        data = request.get_json() or {}
+        files = data.get('files', [])
+        if not files:
+            return jsonify({"error": "未选择任何视频文件"}), 400
+
+        created = 0
+        for f in files:
+            rel_path = f.get('path', '').strip()
+            if not rel_path:
+                continue
+            safe_path = os.path.normpath(rel_path).lstrip(os.sep)
+            if safe_path.startswith('..'):
+                continue
+            input_path = os.path.join(CONFIG["DOWNLOAD_DIR"], safe_path)
+            if not os.path.exists(input_path):
+                continue
+
+            base_name = os.path.splitext(os.path.basename(safe_path))[0]
+            parent_dir = os.path.dirname(safe_path)
+            output_name = f"{base_name}.m4a"
+            output_path = os.path.join(CONFIG["DOWNLOAD_DIR"], parent_dir, output_name) if parent_dir else os.path.join(CONFIG["DOWNLOAD_DIR"], output_name)
+
+            task_id = str(uuid.uuid4())[:8]
+            timestamp = datetime.datetime.now().strftime('%m%d_%H%M%S')
+            task_name = f"{base_name}_{timestamp}_{task_id[:3]}"
+
+            with TASK_LOCK:
+                tasks[task_id] = {
+                    'url': f'音频提取: {os.path.basename(input_path)}',
+                    'name': task_name,
+                    'cmd': None,
+                    'status': '排队中',
+                    'log': '等待转换...',
+                    'audio_target': {'input_path': input_path, 'output_path': output_path},
+                    'created_at': datetime.datetime.now().isoformat(timespec='seconds'),
+                    'process': None,
+                    'download_dir': os.path.dirname(input_path)
+                }
+            created += 1
+
+        if created == 0:
+            return jsonify({"error": "没有有效的视频文件可转换"}), 400
+
+        save_tasks()
+        log_info(f"[音频提取] 创建了 {created} 个转换任务")
+        return jsonify({"message": f"已创建 {created} 个音频提取任务", "created": created}), 200
+    except Exception as e:
+        log_error(f"创建音频提取任务失败: {e}")
+        return jsonify({"error": str(e)}), 500
+
 def start_task(url, name, task_id, download_dir=None):
     global GLOBAL_REFERER
     if download_dir is None:
@@ -727,7 +864,7 @@ def scheduler_loop():
                             t['status'] = '排队中'
                             t['log'] = 'FFmpeg就绪，开始排队...'
                 
-                active_tasks = sum(1 for t in tasks.values() if t['status'] in ['下载中', '合并中'])
+                active_tasks = sum(1 for t in tasks.values() if t['status'] in ['下载中', '合并中', '转换中'])
                 if active_tasks < CONFIG["MAX_DOWNLOADS"]:
                     task_to_run = next(((tid, t) for tid, t in tasks.items() if t['status'] == '排队中'), None)
                     if task_to_run:
@@ -735,6 +872,12 @@ def scheduler_loop():
                         if task.get('cmd'):
                             if ffmpeg_ready:
                                 threading.Thread(target=run_download, args=(tid, task['cmd'])).start()
+                            else:
+                                task['status'] = '等待FFmpeg'
+                                task['log'] = '等待FFmpeg安装完成...'
+                        elif task.get('audio_target'):
+                            if ffmpeg_ready:
+                                threading.Thread(target=run_audio_extract, args=(tid, task['audio_target'])).start()
                             else:
                                 task['status'] = '等待FFmpeg'
                                 task['log'] = '等待FFmpeg安装完成...'

@@ -123,6 +123,13 @@
         .toast-warning { background: linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%); color: #b45309; border: 1px solid #fde68a; }
         @keyframes toastIn { from { opacity: 0; transform: translateX(100px); } to { opacity: 1; transform: translateX(0); } }
         @keyframes toastOut { from { opacity: 1; transform: translateX(0); } to { opacity: 0; transform: translateX(100px); } }
+        .video-file-item { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-bottom: 1px solid #f1f5f9; cursor: pointer; transition: background 0.15s; font-size: 13px; color: #334155; }
+        .video-file-item:last-child { border-bottom: none; }
+        .video-file-item:hover { background: #f0f4ff; }
+        .video-file-item.selected { background: #eef2ff; }
+        .video-file-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .video-file-size { font-size: 11px; color: #94a3b8; white-space: nowrap; font-family: "Cascadia Mono", "SF Mono", Consolas, monospace; }
+        .video-file-path { font-size: 11px; color: #a0aec0; }
         @media (max-width: 600px) {
             body { padding: 12px 10px; background: linear-gradient(135deg, #eef2ff 0%, #f8fafc 100%); }
             .logo-title { font-size: 22px; }
@@ -198,6 +205,24 @@
             </form>
         </div>
 
+        <div class="card tool-card" style="border-color: #c7d2fe; background: linear-gradient(135deg, rgba(238,242,255,0.96) 0%, rgba(240,253,250,0.94) 100%);">
+            <h3 style="color: #3730a3;">🎵 音频提取工具</h3>
+            <p style="font-size: 13px; color: #4338ca; margin: 0 0 12px 0;">扫描下载目录中的视频文件，批量提取转换为 m4a 音频</p>
+            <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+                <button type="button" class="btn btn-main" onclick="loadVideoFiles()" id="scanVideoBtn">📂 扫描视频文件</button>
+                <button type="button" class="btn btn-success" onclick="batchAudioExtract()" id="extractAudioBtn" disabled>🎵 提取选中音频</button>
+            </div>
+            <div id="videoFileList" style="display: none;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                    <label style="font-size: 13px; color: #475569; display: flex; align-items: center; gap: 6px;">
+                        <input type="checkbox" id="selectAllVideos" onchange="toggleSelectAllVideos()" class="checkbox"> 全选
+                    </label>
+                    <span id="selectedVideoCount" style="font-size: 12px; color: #6b7280;">已选择 0 个</span>
+                </div>
+                <div id="videoFileContainer" style="max-height: 300px; overflow-y: auto; border: 1px solid #e2e8f0; border-radius: 10px; background: white;"></div>
+            </div>
+        </div>
+
         <div class="card">
             <div class="card-header">
                 <h3>📋 任务列表</h3>
@@ -254,6 +279,8 @@
         let refreshTimer = null;
         let isScrolling = false;
         let scrollTimeout = null;
+        let selectedVideoFiles = new Set();
+        let videoFilesData = [];
         const ACTIVE_REFRESH_INTERVAL = 2000;
         const IDLE_REFRESH_INTERVAL = 10000;
 
@@ -559,7 +586,7 @@
                 document.getElementById('workerStatus').innerText = `运行中: ${data.active_workers}/${data.max_workers}`;
                 
                 const taskIds = Array.isArray(data.task_order) ? data.task_order : Object.keys(data.tasks);
-                const hasActiveTask = taskIds.some(id => ['排队中', '下载中', '合并中', '等待FFmpeg'].includes(data.tasks[id].status));
+                const hasActiveTask = taskIds.some(id => ['排队中', '下载中', '合并中', '等待FFmpeg', '转换中'].includes(data.tasks[id].status));
                 nextRefreshDelay = hasActiveTask ? ACTIVE_REFRESH_INTERVAL : IDLE_REFRESH_INTERVAL;
                 selectedTasks.forEach(taskId => {
                     if (!taskIds.includes(taskId)) selectedTasks.delete(taskId);
@@ -584,7 +611,7 @@
                     const safeStatus = escapeHtml(t.status || '-');
                     const safeLog = escapeHtml(t.log || '-');
                     
-                    if (t.status === '下载中' || t.status === '合并中') {
+                    if (t.status === '下载中' || t.status === '合并中' || t.status === '转换中') {
                         taskProgressCache[id] = progress.percent;
                     } else if (taskProgressCache[id] === undefined) {
                         taskProgressCache[id] = progress.percent;
@@ -612,6 +639,10 @@
                             btns = `<span style="font-size:11px;color:#7c3aed;">执行中...</span>`;
                             statusClass = 'status-merge';
                             break;
+                        case '转换中':
+                            btns = `<span style="font-size:11px;color:#7c3aed;">转换中...</span>`;
+                            statusClass = 'status-merge';
+                            break;
                         case '已完成':
                             displayPercent = 100;
                             statusClass = 'status-done';
@@ -620,12 +651,18 @@
                             displayPercent = 100;
                             statusClass = 'status-warn';
                             break;
+                        case '完成(音频)':
+                            displayPercent = 100;
+                            statusClass = 'status-done';
+                            break;
                         case '已暂停':
                         case '已中断':
                         case '已取消':
                         case '错误':
                             if (t.cmd) {
                                 btns = `<div class="btn-group"><button class="btn btn-sm btn-main" data-task-id="${safeId}" onclick="manageTask(this.dataset.taskId,'resume')">恢复</button><button class="btn btn-sm btn-success" data-task-id="${safeId}" onclick="manageTask(this.dataset.taskId,'merge')">强合</button></div>`;
+                            } else if (t.audio_target) {
+                                btns = `<button class="btn btn-sm btn-main" data-task-id="${safeId}" onclick="manageTask(this.dataset.taskId,'resume')">重新转换</button>`;
                             } else {
                                 btns = `<button class="btn btn-sm btn-success" data-task-id="${safeId}" onclick="manageTask(this.dataset.taskId,'merge')">重试合并</button>`;
                             }
@@ -682,6 +719,144 @@
                 refreshNow();
             }
         });
+
+        function formatFileSize(bytes) {
+            if (bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+        }
+
+        async function loadVideoFiles() {
+            const btn = document.getElementById('scanVideoBtn');
+            btn.disabled = true;
+            btn.textContent = '🔍 扫描中...';
+            try {
+                const response = await apiFetch('/api/video_files');
+                const data = await response.json();
+                videoFilesData = data.videos || [];
+                selectedVideoFiles.clear();
+                document.getElementById('selectAllVideos').checked = false;
+
+                const container = document.getElementById('videoFileContainer');
+                const listDiv = document.getElementById('videoFileList');
+
+                if (videoFilesData.length === 0) {
+                    container.innerHTML = '<div style="text-align:center; padding:20px; color:#94a3b8; font-size:13px;">未找到任何视频文件</div>';
+                    listDiv.style.display = 'block';
+                    updateSelectedVideoCount();
+                    return;
+                }
+
+                container.innerHTML = '';
+                videoFilesData.forEach((file, idx) => {
+                    const item = document.createElement('div');
+                    item.className = 'video-file-item';
+                    item.dataset.idx = idx;
+                    item.innerHTML = `
+                        <input type="checkbox" class="checkbox video-checkbox" data-idx="${idx}" onchange="toggleVideoFileCheckbox(${idx}, this)" onclick="event.stopPropagation()">
+                        <div style="flex:1; min-width:0;" onclick="toggleVideoFileByClick(${idx})">
+                            <div class="video-file-name" title="${escapeHtml(file.name)}">${escapeHtml(file.name)}</div>
+                            ${file.path.includes('/') ? `<div class="video-file-path">${escapeHtml(file.path)}</div>` : ''}
+                        </div>
+                        <div class="video-file-size" onclick="event.stopPropagation()">${formatFileSize(file.size)}</div>
+                    `;
+                    item.onclick = function(e) {
+                        if (e.target.type !== 'checkbox') toggleVideoFileByClick(idx);
+                    };
+                    container.appendChild(item);
+                });
+
+                listDiv.style.display = 'block';
+                updateSelectedVideoCount();
+                showToast(`扫描到 ${videoFilesData.length} 个视频文件`, 'info');
+            } catch (err) {
+                showToast(err.message || '扫描视频文件失败', 'error');
+            } finally {
+                btn.disabled = false;
+                btn.textContent = '📂 扫描视频文件';
+            }
+        }
+
+        function toggleVideoFileByClick(idx) {
+            const cb = document.querySelector(`.video-checkbox[data-idx="${idx}"]`);
+            if (cb) {
+                cb.checked = !cb.checked;
+                toggleVideoFileCheckbox(idx, cb);
+            }
+        }
+
+        function toggleVideoFileCheckbox(idx, checkbox) {
+            const item = checkbox.closest('.video-file-item');
+            if (checkbox.checked) {
+                selectedVideoFiles.add(idx);
+                if (item) item.classList.add('selected');
+            } else {
+                selectedVideoFiles.delete(idx);
+                if (item) item.classList.remove('selected');
+            }
+            const total = document.querySelectorAll('.video-checkbox').length;
+            const allChecked = total > 0 && total === selectedVideoFiles.size;
+            document.getElementById('selectAllVideos').checked = allChecked;
+            updateSelectedVideoCount();
+        }
+
+        function toggleSelectAllVideos() {
+            const isChecked = document.getElementById('selectAllVideos').checked;
+            document.querySelectorAll('.video-checkbox').forEach(cb => {
+                cb.checked = isChecked;
+                const idx = parseInt(cb.dataset.idx);
+                const item = cb.closest('.video-file-item');
+                if (isChecked) {
+                    selectedVideoFiles.add(idx);
+                    if (item) item.classList.add('selected');
+                } else {
+                    selectedVideoFiles.delete(idx);
+                    if (item) item.classList.remove('selected');
+                }
+            });
+            updateSelectedVideoCount();
+        }
+
+        function updateSelectedVideoCount() {
+            const count = selectedVideoFiles.size;
+            document.getElementById('selectedVideoCount').textContent = `已选择 ${count} 个`;
+            document.getElementById('extractAudioBtn').disabled = count === 0;
+        }
+
+        async function batchAudioExtract() {
+            if (selectedVideoFiles.size === 0) {
+                showToast('请先选择要转换的视频文件', 'warning');
+                return;
+            }
+            const files = Array.from(selectedVideoFiles).map(idx => ({
+                path: videoFilesData[idx].path
+            }));
+            const btn = document.getElementById('extractAudioBtn');
+            btn.disabled = true;
+            btn.textContent = '⏳ 提交中...';
+            try {
+                const response = await apiFetch('/api/audio_extract', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ files })
+                });
+                const data = await response.json().catch(() => ({}));
+                showToast(data.message || `已创建 ${files.length} 个转换任务`);
+                selectedVideoFiles.clear();
+                document.getElementById('selectAllVideos').checked = false;
+                document.querySelectorAll('.video-checkbox').forEach(cb => { cb.checked = false; });
+                document.querySelectorAll('.video-file-item').forEach(item => item.classList.remove('selected'));
+                updateSelectedVideoCount();
+                refreshTasks(true);
+            } catch (err) {
+                showToast(err.message || '创建音频提取任务失败', 'error');
+            } finally {
+                btn.disabled = false;
+                btn.textContent = '🎵 提取选中音频';
+            }
+        }
 
         initScrollDetection();
         refreshNow();
