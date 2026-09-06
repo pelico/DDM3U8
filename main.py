@@ -700,7 +700,11 @@ def down():
             sub_path = os.path.basename(sub_path.strip('/\\'))
             if sub_path:
                 download_dir = os.path.join(download_dir, sub_path)
-                os.makedirs(download_dir, exist_ok=True)
+        # 始终确保下载目录存在（不只在 sub_path 非空时创建）：
+        # boot() 的 fix_environment 已建 /downloads，但容器卷挂载变化、
+        # 手动清理 /downloads、或 sub_path 为空时旧逻辑跳过 makedirs，
+        # 都会让 N_m3u8DL-RE 写入时报 errno 2 (ENOENT)。这里兜底重建。
+        os.makedirs(download_dir, exist_ok=True)
         
         with TASK_LOCK:
             active_urls = {t.get('url'): t for t in tasks.values() if t.get('status') in ACTIVE_TASK_STATUSES}
@@ -836,6 +840,12 @@ def start_task(url, name, task_id, download_dir=None):
         "--thread-count", "10"
     ]
     temp_dir = os.path.join(download_dir, f"{name}_temp")
+    # 显式创建临时工作目录：N_m3u8DL-RE 以 --tmp-dir 指定的工作目录必须预先存在，
+    # 否则二进制写入首批 ts 切片时报 errno 2 (ENOENT) "no such file or directory"，
+    # 表现为 /downloads/<任务名>_temp 等临时目录找不到。旧逻辑只计算路径不创建
+    # → 任务提交成功但调度器拉起二进制即失败。这里在入队前一并建好。
+    os.makedirs(temp_dir, exist_ok=True)
+    os.makedirs(download_dir, exist_ok=True)
     with TASK_LOCK:
         if GLOBAL_REFERER: 
             cmd.extend(["--header", f"Referer:{GLOBAL_REFERER}"])
