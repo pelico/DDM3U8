@@ -589,7 +589,11 @@ def down():
             sub_path = os.path.basename(sub_path.strip('/\\'))
             if sub_path:
                 download_dir = os.path.join(download_dir, sub_path)
-                os.makedirs(download_dir, exist_ok=True)
+        # 始终确保下载目录存在（不只在 sub_path 非空时创建）：
+        # boot() 已建 /downloads，但卷挂载变化、被清空、或 sub_path 为空时
+        # 旧逻辑跳过 makedirs，yt-dlp 用 -o 写 temp_dir 会因父目录不存在失败。
+        # 这里兜底重建，幂等无害。start_task 已建 temp_dir，此处只补 download_dir。
+        os.makedirs(download_dir, exist_ok=True)
         
         with TASK_LOCK:
             active_urls = {t.get('url'): t for t in tasks.values() if t.get('status') in ACTIVE_TASK_STATUSES}
