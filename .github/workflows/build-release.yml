@@ -53,8 +53,8 @@ jobs:
       - name: Upload tar artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${IMAGE_NAME}-${{ matrix.arch }}
-          path: ${IMAGE_NAME}-${{ matrix.arch }}.tar
+          name: ${{ env.IMAGE_NAME }}-${{ matrix.arch }}
+          path: ${{ env.IMAGE_NAME }}-${{ matrix.arch }}.tar
           retention-days: 30
 
   release:
