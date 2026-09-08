@@ -317,18 +317,12 @@ def boot():
 # ================= 后端业务逻辑 =================
 def execute_merge_logic(task_id, target_tmp_dir, final_out_file, log_title):
     try:
-        # yt-dlp 模式不生成分片目录，无法强合
-        with TASK_LOCK:
-            task = tasks.get(task_id, {})
-            if task.get('core') == 'yt-dlp':
-                tasks[task_id]['status'] = '错误'
-                tasks[task_id]['log'] = 'yt-dlp 模式不支持强合（无分片缓存），请点「恢复」重新下载'
-                return
         if not os.path.exists(target_tmp_dir): raise Exception("未找到缓存目录")
 
         target_sub_dir, m3u8_file_path = None, None
         for root, dirs, files in os.walk(target_tmp_dir):
-            if any(f.endswith(('.ts', '.m4s')) for f in files):
+            # yt-dlp 分片可能是 .part-Frag，N_m3u8DL-RE 是 .ts/.m4s，伪装分片可能是 .jpeg
+            if any(f.endswith(('.ts', '.m4s', '.jpeg')) or '.part-Frag' in f for f in files):
                 target_sub_dir = root
                 for m_root, m_dirs, m_files in os.walk(target_tmp_dir):
                      for f in m_files:
@@ -352,7 +346,7 @@ def execute_merge_logic(task_id, target_tmp_dir, final_out_file, log_title):
         
         if not ts_files_in_order:
             log_info(f"[{log_title}] 未找到有效的m3u8清单，将尝试按文件名自然排序（可能导致乱序）")
-            ts_files = [f for f in os.listdir(target_sub_dir) if f.endswith(('.ts', '.m4s', '.jpeg'))]
+            ts_files = [f for f in os.listdir(target_sub_dir) if f.endswith(('.ts', '.m4s', '.jpeg')) or '.part-Frag' in f]
             def natural_keys(text): return [int(c) if c.isdigit() else c for c in re.split(r'(\d+)', text)]
             ts_files.sort(key=natural_keys)
             ts_files_in_order = ts_files
@@ -467,20 +461,29 @@ def run_audio_extract(task_id, audio_target):
 
 def run_download(task_id, cmd):
     task_name = tasks.get(task_id, {}).get('name', 'Unknown')
-    log_info(f"[调度器] 任务 [{task_name}] 开始执行")
+    core = tasks.get(task_id, {}).get('core', 'n_m3u8dl_re')
+    log_info(f"[调度器] 任务 [{task_name}] 开始执行 (core={core})")
     log_info(f"[调度器] 命令: {' '.join(cmd)}")
     # 用于保存全部输出（最后 MAX_LOG_LINES 行），出错时回显给用户定位问题
     recent_lines = []
     try:
         with TASK_LOCK: 
             tasks[task_id]['status'] = '下载中'
-            tasks[task_id]['process'] = None  # 先清空
+            tasks[task_id]['process'] = None
         save_tasks()
         
-        # 创建子进程
-        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, encoding='utf-8', errors='ignore')
+        # yt-dlp 需要将分片缓存落到 temp_dir（通过 TMPDIR + cwd 控制）
+        # N_m3u8DL-RE 由 --tmp-dir 参数自行控制，这里保持默认
+        popen_kwargs = dict(stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, encoding='utf-8', errors='ignore')
+        if core == 'yt-dlp':
+            temp_dir = tasks.get(task_id, {}).get('temp_dir', CONFIG["DOWNLOAD_DIR"])
+            env = os.environ.copy()
+            env['TMPDIR'] = temp_dir
+            popen_kwargs['env'] = env
+            popen_kwargs['cwd'] = temp_dir
+
+        process = subprocess.Popen(cmd, **popen_kwargs)
         
-        # 保存进程引用到全局字典
         with TASK_LOCK:
             tasks[task_id]['process'] = process
         
@@ -494,37 +497,72 @@ def run_download(task_id, cmd):
                     log_info(f"[调度器] 任务 [{task_name}] 状态已变更为 {current_status}，停止读取输出")
                     break
             log_content = line.strip()
-            # 所有行都入队保留（便于出错回溯）
             recent_lines.append(log_content)
             if len(recent_lines) > MAX_LOG_LINES:
                 recent_lines.pop(0)
-            # 进度行实时展示
-            if "%" in log_content or "B/s" in log_content: 
+            # yt-dlp 进度行含 "downloading"，N_m3u8DL-RE 含 % / B/s
+            if "%" in log_content or "B/s" in log_content or "downloading" in log_content.lower(): 
                 with TASK_LOCK:
                     if task_id in tasks:
                         tasks[task_id]['log'] = log_content[-100:]
         
-        # 等待进程结束
         process.wait()
         
         with TASK_LOCK:
-            if task_id in tasks and tasks[task_id]['status'] == '下载中':
+            if task_id not in tasks or tasks[task_id]['status'] != '下载中':
+                pass
+            elif core == 'yt-dlp':
+                # yt-dlp 输出 .ts，需 ffmpeg 封装为 .mp4
+                download_dir = tasks[task_id].get('download_dir', CONFIG["DOWNLOAD_DIR"])
+                temp_dir = tasks[task_id].get('temp_dir', os.path.join(download_dir, f"{task_name}_temp"))
+                temp_ts = os.path.join(temp_dir, f"{task_name}.ts")
+                if process.returncode == 0 and os.path.exists(temp_ts):
+                    tasks[task_id]['status'] = '合并中'
+                    tasks[task_id]['log'] = '正在封装为MP4...'
+                else:
+                    err_tail = ' | '.join(l for l in recent_lines[-6:] if l)
+                    reason = f"进程退出码 {process.returncode}" if process.returncode != 0 else "假成功(未生成TS文件)"
+                    tasks[task_id]['status'] = '错误'
+                    tasks[task_id]['log'] = f'❌ {reason}  末尾输出: {err_tail[:300]}'
+                    log_error(f"[调度器] 任务 [{task_name}] 失败: {reason}; 末尾输出: {err_tail}")
+            else:
+                # N_m3u8DL-RE 直接输出 .mp4
                 download_dir = tasks[task_id].get('download_dir', CONFIG["DOWNLOAD_DIR"])
                 expected_out_file = os.path.join(download_dir, f"{task_name}.mp4")
                 if process.returncode == 0 and os.path.exists(expected_out_file):
                     tasks[task_id]['status'] = '已完成'
                     tasks[task_id]['log'] = '✅ 完整下载并合并成功'
                 else:
-                    # 失败时拼出真实错误信息，不再只给笼统提示
                     err_tail = ' | '.join(l for l in recent_lines[-6:] if l)
-                    if process.returncode != 0:
-                        reason = f"进程退出码 {process.returncode}"
-                    else:
-                        reason = "假成功(未生成最终MP4，可能是分片扩展名/合并问题)"
+                    reason = f"进程退出码 {process.returncode}" if process.returncode != 0 else "假成功(未生成最终MP4)"
                     tasks[task_id]['status'] = '错误'
                     tasks[task_id]['log'] = f'❌ {reason}  末尾输出: {err_tail[:300]}'
-                    log_error(f"[调度器] 任务 [{task_name}] 失败: {reason}")
-                    log_error(f"[调度器] 末尾输出: {err_tail}")
+                    log_error(f"[调度器] 任务 [{task_name}] 失败: {reason}; 末尾输出: {err_tail}")
+
+        # yt-dlp 下载完成后，ffmpeg 将 .ts 封装为 .mp4（流复制，不重编码）
+        if tasks.get(task_id, {}).get('status') == '合并中':
+            try:
+                download_dir = tasks[task_id].get('download_dir', CONFIG["DOWNLOAD_DIR"])
+                temp_dir = tasks[task_id].get('temp_dir', os.path.join(download_dir, f"{task_name}_temp"))
+                temp_ts = os.path.join(temp_dir, f"{task_name}.ts")
+                final_mp4 = os.path.join(download_dir, f"{task_name}.mp4")
+                ffmpeg_cmd = ["ffmpeg", "-y", "-i", temp_ts, "-c", "copy", "-bsf:a", "aac_adtstoasc", "-movflags", "+faststart", final_mp4]
+                ffmpeg_proc = subprocess.run(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='ignore')
+                if ffmpeg_proc.returncode == 0 and os.path.exists(final_mp4):
+                    os.remove(temp_ts)
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+                    with TASK_LOCK:
+                        if task_id in tasks:
+                            tasks[task_id]['status'] = '已完成'
+                            tasks[task_id]['log'] = '✅ 完整下载并合并成功'
+                else:
+                    raise Exception(f"ffmpeg封装失败: returncode={ffmpeg_proc.returncode}")
+            except Exception as e:
+                log_error(f"[调度器] ffmpeg封装失败: {e}")
+                with TASK_LOCK:
+                    if task_id in tasks:
+                        tasks[task_id]['status'] = '错误'
+                        tasks[task_id]['log'] = f'封装失败: {str(e)[:60]}，可点[强合]重试'
     except Exception as e:
         log_error(f"[调度器] 任务 [{task_name}] 执行异常: {e}")
         with TASK_LOCK:
@@ -940,23 +978,26 @@ def start_task(url, name, task_id, download_dir=None, headers=None, core=None):
         core = DOWNLOAD_CORE or "n_m3u8dl_re"
 
     if core == "yt-dlp":
-        # yt-dlp 命令：直接下载并合并为 mp4
-        # 注意：yt-dlp 不创建 <name>_temp 分片目录，中断后无分片可强合
-        #       因此 yt-dlp 模式不支持"强制合并"，失败后直接重新下载
-        output_path = os.path.join(download_dir, f"{name}.mp4")
+        # yt-dlp 两步走方案（对齐 armv7l 分支）：
+        #   1) yt-dlp 下载原始 .ts 到 <temp_dir>/<name>.ts（--hls-prefer-native --fixup never 不做封装）
+        #   2) run_download 里用 ffmpeg -c copy 封装为 <download_dir>/<name>.mp4
+        # 分片缓存落到 temp_dir（通过 TMPDIR/cwd 控制），中断后 temp_dir 含 .ts 可强合
+        temp_ts = os.path.join(download_dir, f"{name}_temp", f"{name}.ts")
         cmd = [
             "yt-dlp", url,
-            "-o", output_path,
+            "-o", temp_ts,
+            "--concurrent-fragments", "10",
+            "--hls-prefer-native",
             "--no-part",
             "--no-mtime",
-            "--concurrent-fragments", "10",
+            "--fixup", "never",
             "--retries", "10",
             "--fragment-retries", "10",
             "--retry-sleep", "fragment:exp=1:60",
-            "--add-header", f"User-Agent:{ua}",
+            "--user-agent", ua,
         ]
         if headers.get("Referer"):
-            cmd.extend(["--referer", headers["Referer"]])
+            cmd.extend(["--add-header", f"Referer:{headers['Referer']}"])
         if headers.get("Origin"):
             cmd.extend(["--add-header", f"Origin:{headers['Origin']}"])
         if headers.get("Cookie"):
@@ -988,9 +1029,10 @@ def start_task(url, name, task_id, download_dir=None, headers=None, core=None):
                 cmd.extend(["--header", custom])
 
     temp_dir = os.path.join(download_dir, f"{name}_temp")
-    # 仅 N_m3u8DL-RE 需要 _temp 分片目录；yt-dlp 不使用
-    if core == "n_m3u8dl_re":
-        os.makedirs(temp_dir, exist_ok=True)
+    # 两种核心都需要 temp_dir：
+    #   N_m3u8DL-RE: 分片缓存目录
+    #   yt-dlp: 输出 .ts 文件 + 分片缓存（TMPDIR/cwd 指向此处）
+    os.makedirs(temp_dir, exist_ok=True)
     os.makedirs(download_dir, exist_ok=True)
     with TASK_LOCK:
         tasks[task_id] = {
