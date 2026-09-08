@@ -317,6 +317,13 @@ def boot():
 # ================= 后端业务逻辑 =================
 def execute_merge_logic(task_id, target_tmp_dir, final_out_file, log_title):
     try:
+        # yt-dlp 模式不生成分片目录，无法强合
+        with TASK_LOCK:
+            task = tasks.get(task_id, {})
+            if task.get('core') == 'yt-dlp':
+                tasks[task_id]['status'] = '错误'
+                tasks[task_id]['log'] = 'yt-dlp 模式不支持强合（无分片缓存），请点「恢复」重新下载'
+                return
         if not os.path.exists(target_tmp_dir): raise Exception("未找到缓存目录")
 
         target_sub_dir, m3u8_file_path = None, None
@@ -934,6 +941,8 @@ def start_task(url, name, task_id, download_dir=None, headers=None, core=None):
 
     if core == "yt-dlp":
         # yt-dlp 命令：直接下载并合并为 mp4
+        # 注意：yt-dlp 不创建 <name>_temp 分片目录，中断后无分片可强合
+        #       因此 yt-dlp 模式不支持"强制合并"，失败后直接重新下载
         output_path = os.path.join(download_dir, f"{name}.mp4")
         cmd = [
             "yt-dlp", url,
@@ -941,6 +950,9 @@ def start_task(url, name, task_id, download_dir=None, headers=None, core=None):
             "--no-part",
             "--no-mtime",
             "--concurrent-fragments", "10",
+            "--retries", "10",
+            "--fragment-retries", "10",
+            "--retry-sleep", "fragment:exp=1:60",
             "--add-header", f"User-Agent:{ua}",
         ]
         if headers.get("Referer"):
@@ -976,7 +988,9 @@ def start_task(url, name, task_id, download_dir=None, headers=None, core=None):
                 cmd.extend(["--header", custom])
 
     temp_dir = os.path.join(download_dir, f"{name}_temp")
-    os.makedirs(temp_dir, exist_ok=True)
+    # 仅 N_m3u8DL-RE 需要 _temp 分片目录；yt-dlp 不使用
+    if core == "n_m3u8dl_re":
+        os.makedirs(temp_dir, exist_ok=True)
     os.makedirs(download_dir, exist_ok=True)
     with TASK_LOCK:
         tasks[task_id] = {

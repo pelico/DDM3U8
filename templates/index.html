@@ -690,7 +690,12 @@
                         case '已取消':
                         case '错误':
                             if (t.cmd) {
-                                btns = `<div class="btn-group"><button class="btn btn-sm btn-main" data-task-id="${safeId}" onclick="manageTask(this.dataset.taskId,'resume')">恢复</button><button class="btn btn-sm btn-success" data-task-id="${safeId}" onclick="manageTask(this.dataset.taskId,'merge')">强合</button></div>`;
+                                // yt-dlp 模式不生成分片缓存，无"强合"可用，仅支持恢复重下
+                                if (t.core === 'yt-dlp') {
+                                    btns = `<button class="btn btn-sm btn-main" data-task-id="${safeId}" onclick="manageTask(this.dataset.taskId,'resume')">重新下载</button>`;
+                                } else {
+                                    btns = `<div class="btn-group"><button class="btn btn-sm btn-main" data-task-id="${safeId}" onclick="manageTask(this.dataset.taskId,'resume')">恢复</button><button class="btn btn-sm btn-success" data-task-id="${safeId}" onclick="manageTask(this.dataset.taskId,'merge')">强合</button></div>`;
+                                }
                             } else if (t.audio_target) {
                                 btns = `<button class="btn btn-sm btn-main" data-task-id="${safeId}" onclick="manageTask(this.dataset.taskId,'resume')">重新转换</button>`;
                             } else {
@@ -702,10 +707,14 @@
                             statusClass = 'status-error';
                     }
 
+                    const coreBadge = t.core === 'yt-dlp'
+                        ? `<span style="display:inline-block;padding:1px 6px;font-size:10px;border-radius:4px;background:#fef3c7;color:#92400e;margin-left:4px;vertical-align:middle;">yt-dlp</span>`
+                        : (t.core === 'n_m3u8dl_re' ? `<span style="display:inline-block;padding:1px 6px;font-size:10px;border-radius:4px;background:#dbeafe;color:#1e40af;margin-left:4px;vertical-align:middle;">RE</span>` : '');
+
                     html += `
                     <tr>
                         <td><input type="checkbox" class="task-checkbox" data-task-id="${safeId}" onchange="toggleTaskSelect(this.dataset.taskId, this)" ${selectedTasks.has(id) ? 'checked' : ''}></td>
-                        <td title="${safeName}">${safeName}</td>
+                        <td title="${safeName}">${safeName}${coreBadge}</td>
                         <td class="status-action-cell"><div class="status-action-wrapper"><span class="status ${statusClass}">${safeStatus}</span>${btns}</div></td>
                         <td>
                             <div class="progress-bar"><div class="progress-fill" style="width:${Math.min(displayPercent, 100)}%"></div></div>
