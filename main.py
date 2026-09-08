@@ -38,13 +38,33 @@ CONFIG = {
     "MAX_DOWNLOADS": int(os.environ.get("MAX_DOWNLOADS", 3))
 }
 
+def detect_download_core():
+    """自动检测可用的下载核心：优先 N_m3u8DL-RE，其次 yt-dlp"""
+    if os.path.exists(CONFIG["BIN_PATH"]):
+        return "n_m3u8dl_re"
+    if shutil.which("yt-dlp"):
+        return "yt-dlp"
+    return None
+
+DOWNLOAD_CORE = detect_download_core()
+
 # 读取鉴权环境变量
 WEB_USER = os.environ.get("WEB_USER", "").strip()
 WEB_PASS = os.environ.get("WEB_PASS", "").strip()
 
 TASK_LOCK = threading.Lock()
 GLOBAL_REFERER = ""  
+GLOBAL_HEADERS = {}  # 全局请求头: {"User-Agent": "...", "Referer": "...", "Origin": "...", "Cookie": "..."}
 tasks = {}
+
+# 默认浏览器 UA，避免部分 CDN 对无 UA 或爬虫 UA 直接拒绝
+DEFAULT_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/126.0.0.0 Safari/537.36"
+)
+# 日志保留的最大行数（用于错误排查）
+MAX_LOG_LINES = 200
 
 app = Flask(__name__)
 app.json.sort_keys = False
@@ -119,11 +139,16 @@ def validate_config():
     else:
         logger.info("ffmpeg 已安装")
     
-    # 验证 N_m3u8DL-RE
-    if not os.path.exists(CONFIG["BIN_PATH"]):
-        log_error(f"N_m3u8DL-RE 不存在: {CONFIG['BIN_PATH']}")
+    # 验证下载核心
+    global DOWNLOAD_CORE
+    DOWNLOAD_CORE = detect_download_core()
+    if DOWNLOAD_CORE == "n_m3u8dl_re":
+        logger.info(f"下载核心: N_m3u8DL-RE ({CONFIG['BIN_PATH']})")
+    elif DOWNLOAD_CORE == "yt-dlp":
+        logger.info("下载核心: yt-dlp")
     else:
-        logger.info(f"N_m3u8DL-RE 已就绪: {CONFIG['BIN_PATH']}")
+        log_error("未检测到可用的下载核心（N_m3u8DL-RE 或 yt-dlp）")
+        ok = False
     
     if ok:
         logger.info("配置验证完成")
@@ -170,6 +195,7 @@ BOOT_STATE = {
     "phase": "unknown",
     "ffmpeg_ready": False,
     "bin_ready": False,
+    "download_core": None,
     "db_loaded": False,
     "downloads_ready": False,
     "errors": [],
@@ -179,6 +205,7 @@ BOOT_STATE = {
 def refresh_boot_state():
     BOOT_STATE["ffmpeg_ready"] = shutil.which("ffmpeg") is not None
     BOOT_STATE["bin_ready"] = os.path.exists(CONFIG["BIN_PATH"])
+    BOOT_STATE["download_core"] = DOWNLOAD_CORE
     BOOT_STATE["downloads_ready"] = os.path.isdir(CONFIG["DOWNLOAD_DIR"]) and os.access(CONFIG["DOWNLOAD_DIR"], os.W_OK)
     return BOOT_STATE
 
@@ -434,6 +461,9 @@ def run_audio_extract(task_id, audio_target):
 def run_download(task_id, cmd):
     task_name = tasks.get(task_id, {}).get('name', 'Unknown')
     log_info(f"[调度器] 任务 [{task_name}] 开始执行")
+    log_info(f"[调度器] 命令: {' '.join(cmd)}")
+    # 用于保存全部输出（最后 MAX_LOG_LINES 行），出错时回显给用户定位问题
+    recent_lines = []
     try:
         with TASK_LOCK: 
             tasks[task_id]['status'] = '下载中'
@@ -447,7 +477,7 @@ def run_download(task_id, cmd):
         with TASK_LOCK:
             tasks[task_id]['process'] = process
         
-        # 读取输出
+        # 读取输出：保留全部行用于排错，进度行实时更新到 log
         for line in iter(process.stdout.readline, ''):
             with TASK_LOCK:
                 if task_id not in tasks:
@@ -456,9 +486,16 @@ def run_download(task_id, cmd):
                 if current_status != '下载中':
                     log_info(f"[调度器] 任务 [{task_name}] 状态已变更为 {current_status}，停止读取输出")
                     break
-                log_content = line.strip()
-                if "%" in log_content or "B/s" in log_content: 
-                    tasks[task_id]['log'] = log_content[-100:]
+            log_content = line.strip()
+            # 所有行都入队保留（便于出错回溯）
+            recent_lines.append(log_content)
+            if len(recent_lines) > MAX_LOG_LINES:
+                recent_lines.pop(0)
+            # 进度行实时展示
+            if "%" in log_content or "B/s" in log_content: 
+                with TASK_LOCK:
+                    if task_id in tasks:
+                        tasks[task_id]['log'] = log_content[-100:]
         
         # 等待进程结束
         process.wait()
@@ -471,15 +508,22 @@ def run_download(task_id, cmd):
                     tasks[task_id]['status'] = '已完成'
                     tasks[task_id]['log'] = '✅ 完整下载并合并成功'
                 else:
-                    reason = "进程报错中断" if process.returncode != 0 else "假成功(未生成最终MP4)"
+                    # 失败时拼出真实错误信息，不再只给笼统提示
+                    err_tail = ' | '.join(l for l in recent_lines[-6:] if l)
+                    if process.returncode != 0:
+                        reason = f"进程退出码 {process.returncode}"
+                    else:
+                        reason = "假成功(未生成最终MP4，可能是分片扩展名/合并问题)"
                     tasks[task_id]['status'] = '错误'
-                    tasks[task_id]['log'] = f'中断({reason})，可点[恢复]或[强合]'
+                    tasks[task_id]['log'] = f'❌ {reason}  末尾输出: {err_tail[:300]}'
+                    log_error(f"[调度器] 任务 [{task_name}] 失败: {reason}")
+                    log_error(f"[调度器] 末尾输出: {err_tail}")
     except Exception as e:
         log_error(f"[调度器] 任务 [{task_name}] 执行异常: {e}")
         with TASK_LOCK:
             if task_id in tasks:
                 tasks[task_id]['status'] = '错误'
-                tasks[task_id]['log'] = str(e)[:100]
+                tasks[task_id]['log'] = f'❌ 异常: {str(e)[:120]}'
     finally:
         with TASK_LOCK:
             if task_id in tasks: 
@@ -497,13 +541,16 @@ def health():
 @app.route('/ready')
 def ready():
     state = refresh_boot_state()
-    ready_ok = state["downloads_ready"] and state["bin_ready"] and state["ffmpeg_ready"]
+    # 下载核心就绪判断：N_m3u8DL-RE 存在 或 yt-dlp 可用
+    core_ready = state["bin_ready"] or state["download_core"] == "yt-dlp"
+    ready_ok = state["downloads_ready"] and core_ready and state["ffmpeg_ready"]
     status_code = 200 if ready_ok else 503
     return jsonify({
         "ready": ready_ok,
         "phase": state["phase"],
         "ffmpeg_ready": state["ffmpeg_ready"],
         "bin_ready": state["bin_ready"],
+        "download_core": state["download_core"],
         "downloads_ready": state["downloads_ready"],
         "db_loaded": state["db_loaded"],
         "errors": state["errors"][-5:],
@@ -532,6 +579,32 @@ def get_tasks():
             "max_workers": CONFIG["MAX_DOWNLOADS"]
         }
     return jsonify(data)
+
+@app.route('/api/task/<task_id>/debug')
+@requires_auth
+def debug_task(task_id):
+    """调试接口：返回任务的完整命令、请求头和状态，便于排查下载失败原因"""
+    with TASK_LOCK:
+        task = tasks.get(task_id)
+    if not task:
+        return jsonify({"error": "任务不存在"}), 404
+    # 脱敏：Cookie 只显示前 20 字符
+    safe_headers = dict(task.get('headers', {}))
+    if safe_headers.get('Cookie'):
+        c = safe_headers['Cookie']
+        safe_headers['Cookie'] = c[:20] + '...(已脱敏)' if len(c) > 20 else c
+    return jsonify({
+        "id": task_id,
+        "name": task.get('name'),
+        "url": task.get('url'),
+        "status": task.get('status'),
+        "log": task.get('log'),
+        "cmd": task.get('cmd'),
+        "cmd_str": ' '.join(task.get('cmd', [])),
+        "headers": safe_headers,
+        "download_dir": task.get('download_dir'),
+        "temp_dir": task.get('temp_dir'),
+    })
 
 @app.route('/api/folders')
 @requires_auth
@@ -676,12 +749,17 @@ def manage_task(task_id):
 @app.route('/down', methods=['POST'])
 @requires_auth
 def down():
-    global GLOBAL_REFERER
+    global GLOBAL_HEADERS
     try:
         url_text = request.form.get('url', '').strip()
         raw_name = request.form.get('name', 'video').strip()
         referer_val = request.form.get('referer', '').strip()
         sub_path = request.form.get('sub_path', '').strip()
+        # 新增：更多请求头
+        user_agent_val = request.form.get('user_agent', '').strip()
+        origin_val = request.form.get('origin', '').strip()
+        cookie_val = request.form.get('cookie', '').strip()
+        custom_headers_val = request.form.get('custom_headers', '').strip()
         
         if not url_text:
             return jsonify({"error": "URL不能为空"}), 400
@@ -692,6 +770,17 @@ def down():
         
         if referer_val == "https://" or not referer_val: 
             referer_val = ""
+        
+        # 组装请求头字典（每次提交都重新生成，避免串任务）
+        headers = {
+            "User-Agent": user_agent_val or DEFAULT_USER_AGENT,
+            "Referer": referer_val,
+            "Origin": origin_val,
+            "Cookie": cookie_val,
+            "Custom": custom_headers_val,
+        }
+        with TASK_LOCK:
+            GLOBAL_HEADERS = headers
         
         # 处理下载子目录
         download_dir = CONFIG["DOWNLOAD_DIR"]
@@ -708,7 +797,6 @@ def down():
         
         with TASK_LOCK:
             active_urls = {t.get('url'): t for t in tasks.values() if t.get('status') in ACTIVE_TASK_STATUSES}
-            GLOBAL_REFERER = referer_val
 
         created_count = 0
         skipped_names = []
@@ -728,7 +816,7 @@ def down():
                 name = f"{raw_name}_{timestamp}_{task_id[:3]}"
 
             log_info(f"[任务创建] 新下载任务: {task_id} - {name} -> {download_dir}")
-            start_task(url, name, task_id, download_dir)
+            start_task(url, name, task_id, download_dir, headers=headers)
             active_urls[url] = {"name": name, "status": "排队中"}
             created_count += 1
 
@@ -827,28 +915,67 @@ def audio_extract():
         log_error(f"创建音频提取任务失败: {e}")
         return jsonify({"error": str(e)}), 500
 
-def start_task(url, name, task_id, download_dir=None):
-    global GLOBAL_REFERER
+def start_task(url, name, task_id, download_dir=None, headers=None):
+    """
+    headers: dict, 可选的请求头，例如
+        {"User-Agent": "...", "Referer": "...", "Origin": "...", "Cookie": "..."}
+    根据 DOWNLOAD_CORE 自动选择 N_m3u8DL-RE 或 yt-dlp 构建命令
+    """
     if download_dir is None:
         download_dir = CONFIG["DOWNLOAD_DIR"]
-    cmd = [
-        CONFIG["BIN_PATH"], url,
-        "--save-name", name,
-        "--save-dir", download_dir,
-        "--tmp-dir", download_dir,
-        "-M", "format=mp4",
-        "--thread-count", "10"
-    ]
+    if headers is None:
+        headers = {}
+
+    ua = headers.get('User-Agent') or DEFAULT_USER_AGENT
+    core = DOWNLOAD_CORE or "n_m3u8dl_re"
+
+    if core == "yt-dlp":
+        # yt-dlp 命令：直接下载并合并为 mp4
+        output_path = os.path.join(download_dir, f"{name}.mp4")
+        cmd = [
+            "yt-dlp", url,
+            "-o", output_path,
+            "--no-part",
+            "--no-mtime",
+            "--concurrent-fragments", "10",
+            "--add-header", f"User-Agent:{ua}",
+        ]
+        if headers.get("Referer"):
+            cmd.extend(["--referer", headers["Referer"]])
+        if headers.get("Origin"):
+            cmd.extend(["--add-header", f"Origin:{headers['Origin']}"])
+        if headers.get("Cookie"):
+            cmd.extend(["--add-header", f"Cookie:{headers['Cookie']}"])
+        for custom in headers.get("Custom", "").splitlines():
+            custom = custom.strip()
+            if custom and ":" in custom:
+                cmd.extend(["--add-header", custom])
+    else:
+        # N_m3u8DL-RE 命令
+        cmd = [
+            CONFIG["BIN_PATH"], url,
+            "--save-name", name,
+            "--save-dir", download_dir,
+            "--tmp-dir", download_dir,
+            "-M", "format=mp4",
+            "--thread-count", "10",
+            "--header", f"User-Agent:{ua}",
+        ]
+        if headers.get("Referer"):
+            cmd.extend(["--header", f"Referer:{headers['Referer']}"])
+        if headers.get("Origin"):
+            cmd.extend(["--header", f"Origin:{headers['Origin']}"])
+        if headers.get("Cookie"):
+            cmd.extend(["--header", f"Cookie:{headers['Cookie']}"])
+        for custom in headers.get("Custom", "").splitlines():
+            custom = custom.strip()
+            if custom and ":" in custom:
+                cmd.extend(["--header", custom])
+
     temp_dir = os.path.join(download_dir, f"{name}_temp")
-    # 显式创建临时工作目录：N_m3u8DL-RE 以 --tmp-dir 指定的工作目录必须预先存在，
-    # 否则二进制写入首批 ts 切片时报 errno 2 (ENOENT) "no such file or directory"，
-    # 表现为 /downloads/<任务名>_temp 等临时目录找不到。旧逻辑只计算路径不创建
-    # → 任务提交成功但调度器拉起二进制即失败。这里在入队前一并建好。
     os.makedirs(temp_dir, exist_ok=True)
     os.makedirs(download_dir, exist_ok=True)
     with TASK_LOCK:
-        if GLOBAL_REFERER: 
-            cmd.extend(["--header", f"Referer:{GLOBAL_REFERER}"])
         tasks[task_id] = {
             'url': url, 
             'name': name, 
@@ -858,7 +985,9 @@ def start_task(url, name, task_id, download_dir=None):
             'created_at': datetime.datetime.now().isoformat(timespec='seconds'),
             'process': None,
             'download_dir': download_dir,
-            'temp_dir': temp_dir
+            'temp_dir': temp_dir,
+            'headers': headers,
+            'core': core
         }
     save_tasks()
 

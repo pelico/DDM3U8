@@ -1,0 +1,79 @@
+name: Build & Release Images
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  IMAGE_NAME: ddm3u8
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            dockerfile: Dockerfile
+          - arch: arm64
+            platform: linux/arm64
+            dockerfile: Dockerfile
+          - arch: armv7l
+            platform: linux/arm/v7
+            dockerfile: Dockerfile.armv7l
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image (${{ matrix.arch }})
+        run: |
+          docker buildx build \
+            --platform ${{ matrix.platform }} \
+            --file ${{ matrix.dockerfile }} \
+            --tag ${IMAGE_NAME}:${{ matrix.arch }} \
+            --output type=docker,dest=${IMAGE_NAME}-${{ matrix.arch }}.tar \
+            .
+
+      - name: Show image size
+        run: ls -lh ${IMAGE_NAME}-${{ matrix.arch }}.tar
+
+      - name: Upload tar artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${IMAGE_NAME}-${{ matrix.arch }}
+          path: ${IMAGE_NAME}-${{ matrix.arch }}.tar
+          retention-days: 30
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List artifacts
+        run: ls -lhR artifacts/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            artifacts/**/*.tar
