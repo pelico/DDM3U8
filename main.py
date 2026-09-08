@@ -755,6 +755,8 @@ def down():
         raw_name = request.form.get('name', 'video').strip()
         referer_val = request.form.get('referer', '').strip()
         sub_path = request.form.get('sub_path', '').strip()
+        # 下载核心选择
+        core_val = request.form.get('core', '').strip()
         # 新增：更多请求头
         user_agent_val = request.form.get('user_agent', '').strip()
         origin_val = request.form.get('origin', '').strip()
@@ -816,7 +818,7 @@ def down():
                 name = f"{raw_name}_{timestamp}_{task_id[:3]}"
 
             log_info(f"[任务创建] 新下载任务: {task_id} - {name} -> {download_dir}")
-            start_task(url, name, task_id, download_dir, headers=headers)
+            start_task(url, name, task_id, download_dir, headers=headers, core=core_val)
             active_urls[url] = {"name": name, "status": "排队中"}
             created_count += 1
 
@@ -915,11 +917,10 @@ def audio_extract():
         log_error(f"创建音频提取任务失败: {e}")
         return jsonify({"error": str(e)}), 500
 
-def start_task(url, name, task_id, download_dir=None, headers=None):
+def start_task(url, name, task_id, download_dir=None, headers=None, core=None):
     """
-    headers: dict, 可选的请求头，例如
-        {"User-Agent": "...", "Referer": "...", "Origin": "...", "Cookie": "..."}
-    根据 DOWNLOAD_CORE 自动选择 N_m3u8DL-RE 或 yt-dlp 构建命令
+    headers: dict, 可选的请求头
+    core: "n_m3u8dl_re" 或 "yt-dlp"，不传则自动检测
     """
     if download_dir is None:
         download_dir = CONFIG["DOWNLOAD_DIR"]
@@ -927,7 +928,9 @@ def start_task(url, name, task_id, download_dir=None, headers=None):
         headers = {}
 
     ua = headers.get('User-Agent') or DEFAULT_USER_AGENT
-    core = DOWNLOAD_CORE or "n_m3u8dl_re"
+    # 优先使用调用方指定的 core，否则用自动检测的
+    if core not in ("n_m3u8dl_re", "yt-dlp"):
+        core = DOWNLOAD_CORE or "n_m3u8dl_re"
 
     if core == "yt-dlp":
         # yt-dlp 命令：直接下载并合并为 mp4

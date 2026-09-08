@@ -191,6 +191,10 @@
                 <textarea class="input-full" name="url" placeholder="粘贴 m3u8 链接，支持多个链接混合输入" required rows="3"></textarea>
                 <div class="input-group">
                     <input type="text" name="name" placeholder="视频名称" value="video" required>
+                    <select name="core" style="flex: 0 0 140px; padding: 13px 12px; border: 1px solid var(--border); border-radius: 12px; font-size: 14px; background: white; color: var(--text);">
+                        <option value="n_m3u8dl_re">N_m3u8DL-RE（快）</option>
+                        <option value="yt-dlp">yt-dlp（兼容伪装分片）</option>
+                    </select>
                 </div>
                 <input type="text" class="input-full" name="referer" value="https://" placeholder="选填：全局 Referer">
                 <div style="margin: 10px 0;">
