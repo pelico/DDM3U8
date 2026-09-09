@@ -312,10 +312,11 @@ func (d *Downloader) buildClient() error {
 		return tlsConn, nil
 	}
 	transport := &http.Transport{
-		DialTLS:            dialTLS,
-		MaxIdleConns:       d.cfg.Concurrency * 2,
-		IdleConnTimeout:    90 * time.Second,
-		DisableCompression: false,
+		DialTLS:             dialTLS,
+		MaxIdleConns:        d.cfg.Concurrency * 2,
+		MaxIdleConnsPerHost: d.cfg.Concurrency * 2, // 默认只有 2，10 并发分片同 host 会导致 8 个请求无法复用连接→每分片都新建 TCP+uTLS 握手，CPU 飙升
+		IdleConnTimeout:     90 * time.Second,
+		DisableCompression:  false,
 	}
 	d.httpc = &http.Client{
 		Transport: transport,
@@ -698,6 +699,7 @@ func (d *Downloader) MergeOnly(ctx context.Context, tempDir, output string) erro
 
 	d.logger("强合: %d 个分片%s -> %s", len(segs),
 		map[bool]string{true: " (含 init)", false: ""}[hasInit], output)
+	d.logger("正在执行 ffmpeg concat 合并...")
 
 	cmd := exec.CommandContext(ctx, d.cfg.FFmpegPath,
 		"-y",
@@ -709,7 +711,22 @@ func (d *Downloader) MergeOnly(ctx context.Context, tempDir, output string) erro
 		output,
 	)
 	cmd.Dir = tempDir
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	// 捕获 ffmpeg stderr 到 buffer，合并后输出到 logger（避免 io.Pipe 无缓冲
+	// 导致 ffmpeg 写阻塞 + logger 回调抢 m.mu.Lock 时链式阻塞）
+	var stderrBuf bytes.Buffer
+	cmd.Stdout = nil
+	cmd.Stderr = io.MultiWriter(&stderrBuf, os.Stderr)
+	err = cmd.Run()
+	// 合并完成后输出 ffmpeg 日志（最后 20 行，避免过长）
+	lines := strings.Split(strings.TrimSpace(stderrBuf.String()), "\n")
+	start := 0
+	if len(lines) > 20 {
+		start = len(lines) - 20
+	}
+	for _, line := range lines[start:] {
+		if line != "" {
+			d.logger("ffmpeg: %s", line)
+		}
+	}
+	return err
 }
