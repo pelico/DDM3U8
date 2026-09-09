@@ -96,6 +96,49 @@ type Downloader struct {
 	// 已下载字节数（含断点续传预扫描的已存在分片）
 	// 用于估算最终文件大小：平均分片大小 × 总数
 	downloadedBytes int64
+
+	// 速度计算：滑动窗口记录最近完成的分片
+	// 用最近若干分片的总大小/总时长算当前下载速度
+	speedMu     sync.Mutex
+	speedWindow []speedSample
+}
+
+type speedSample struct {
+	at    time.Time
+	bytes int64
+}
+
+// recordSpeed 记录一个分片完成事件，返回当前下载速度（bytes/s）
+// 滑动窗口保留最近 30 秒的样本，过期自动清理
+func (d *Downloader) recordSpeed(segBytes int64) float64 {
+	now := time.Now()
+	d.speedMu.Lock()
+	defer d.speedMu.Unlock()
+	d.speedWindow = append(d.speedWindow, speedSample{at: now, bytes: segBytes})
+	// 清理 30 秒前的样本
+	cutoff := now.Add(-30 * time.Second)
+	idx := 0
+	for ; idx < len(d.speedWindow); idx++ {
+		if d.speedWindow[idx].at.After(cutoff) {
+			break
+		}
+	}
+	if idx > 0 {
+		d.speedWindow = d.speedWindow[idx:]
+	}
+	// 算窗口内总字节 / 总时长
+	if len(d.speedWindow) < 2 {
+		return 0
+	}
+	var total int64
+	for _, s := range d.speedWindow {
+		total += s.bytes
+	}
+	dur := d.speedWindow[len(d.speedWindow)-1].at.Sub(d.speedWindow[0].at).Seconds()
+	if dur <= 0 {
+		return 0
+	}
+	return float64(total) / dur
 }
 
 // humanBytes 把字节数格式化为人类可读大小（如 2.8GB）
@@ -668,18 +711,22 @@ func (d *Downloader) downloadSegments(ctx context.Context, p *m3u8.Playlist, key
 				d.progressMu.Unlock()
 			} else {
 				// 累加已下载字节（用于估算最终文件大小）
+				var segBytes int64
 				if info, err := os.Stat(outPath); err == nil {
-					atomic.AddInt64(&d.downloadedBytes, info.Size())
+					segBytes = info.Size()
+					atomic.AddInt64(&d.downloadedBytes, segBytes)
 				}
+				// 计算当前下载速度（滑动窗口）
+				speed := d.recordSpeed(segBytes)
 				// 先更新进度，再通过 logger 把快照传给上层（避免上层再 RLock progressMu 读）
 				d.progressMu.Lock()
 				d.progress.Done++
 				d.progress.Current = seg.Index
 				snap := d.progress
 				d.progressMu.Unlock()
-				// 用 "progress done/total/failed/bytes" 格式，上层据此前缀做节流展示
+				// 用 "progress done/total/failed/bytes/speed" 格式，上层据此前缀做节流展示
 				bytes := atomic.LoadInt64(&d.downloadedBytes)
-				d.logger("progress %d/%d/%d/%d", snap.Done, snap.Total, snap.Failed, bytes)
+				d.logger("progress %d/%d/%d/%d/%.0f", snap.Done, snap.Total, snap.Failed, bytes, speed)
 			}
 		}()
 	}

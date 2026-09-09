@@ -206,7 +206,8 @@ func (m *TaskManager) runTask(t *Task) {
 			}
 			var done, total, failed int
 			var bytes int64
-			_, _ = fmt.Sscanf(msg, "progress %d/%d/%d/%d", &done, &total, &failed, &bytes)
+			var speed float64
+			_, _ = fmt.Sscanf(msg, "progress %d/%d/%d/%d/%f", &done, &total, &failed, &bytes, &speed)
 			m.mu.Lock()
 			defer m.mu.Unlock()
 			if total > 0 {
@@ -218,6 +219,10 @@ func (m *TaskManager) runTask(t *Task) {
 					estTotal := avg * int64(total)
 					logLine += fmt.Sprintf(" | 已下 %s / 预估 %s",
 						formatBytes(bytes), formatBytes(estTotal))
+				}
+				// 显示当前下载速度
+				if speed > 0 {
+					logLine += fmt.Sprintf(" | %s/s", formatBytes(int64(speed)))
 				}
 				t.Log = logLine
 			} else {
