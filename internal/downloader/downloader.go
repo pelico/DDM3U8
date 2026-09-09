@@ -436,19 +436,84 @@ func (d *Downloader) setHeaders(req *http.Request) {
 	if req.Header.Get("Sec-Fetch-Dest") == "" {
 		req.Header.Set("Sec-Fetch-Dest", "empty")
 	}
-	if req.Header.Get("sec-ch-ua") == "" {
-		req.Header.Set("sec-ch-ua", `"Not.A/Brand";v="8", "Chromium";v="126", "Google Chrome";v="126"`)
-	}
+	// sec-ch-ua 系列：根据 UA 自动推导，确保 UA 和 sec-ch-ua 自洽
+	// （UA 是 Android 但 sec-ch-ua-platform 是 Windows 会被 CF 识别）
+	ua := d.cfg.UserAgent
 	if req.Header.Get("sec-ch-ua-mobile") == "" {
-		req.Header.Set("sec-ch-ua-mobile", "?0")
+		if strings.Contains(ua, "Android") || strings.Contains(ua, "iPhone") || strings.Contains(ua, "Mobile") {
+			req.Header.Set("sec-ch-ua-mobile", "?1")
+		} else {
+			req.Header.Set("sec-ch-ua-mobile", "?0")
+		}
 	}
 	if req.Header.Get("sec-ch-ua-platform") == "" {
-		req.Header.Set("sec-ch-ua-platform", `"Windows"`)
+		switch {
+		case strings.Contains(ua, "Android"):
+			req.Header.Set("sec-ch-ua-platform", `"Android"`)
+		case strings.Contains(ua, "iPhone"), strings.Contains(ua, "iPad"):
+			req.Header.Set("sec-ch-ua-platform", `"iOS"`)
+		case strings.Contains(ua, "Mac OS X"), strings.Contains(ua, "Macintosh"):
+			req.Header.Set("sec-ch-ua-platform", `"macOS"`)
+		case strings.Contains(ua, "Windows"), strings.Contains(ua, "Win64"):
+			req.Header.Set("sec-ch-ua-platform", `"Windows"`)
+		case strings.Contains(ua, "Linux"):
+			req.Header.Set("sec-ch-ua-platform", `"Linux"`)
+		default:
+			req.Header.Set("sec-ch-ua-platform", `"Windows"`)
+		}
+	}
+	if req.Header.Get("sec-ch-ua") == "" {
+		// 从 UA 提取浏览器品牌和主版本号，构建 sec-ch-ua
+		// 默认 Chrome 126 桌面版
+		browser, version := parseBrowserFromUA(ua)
+		req.Header.Set("sec-ch-ua", fmt.Sprintf(`"Not.A/Brand";v="8", "%s";v="%s"`, browser, version))
 	}
 	// 用户自定义头会覆盖上面的默认值（放在最后赋值）
 	for k, v := range d.cfg.Headers {
 		req.Header.Set(k, v)
 	}
+}
+
+// parseBrowserFromUA 从 UA 字符串提取浏览器品牌和主版本号，用于构建自洽的 sec-ch-ua
+// UA 形如 "Mozilla/5.0 ... Chrome/140.0.0.0 ... Edg/140.0.0.0"
+// 优先级：Edge > Chrome > Firefox > Safari（按 UA 后出现的品牌，浏览器会附在末尾）
+func parseBrowserFromUA(ua string) (browser, version string) {
+	uaLower := strings.ToLower(ua)
+	// Edge 优先（Edge UA 末尾带 Edg/x，Chrome 在中间）
+	if idx := strings.Index(uaLower, "edg/"); idx >= 0 {
+		if v := extractVersion(ua[idx+4:]); v != "" {
+			return "Microsoft Edge", v
+		}
+	}
+	if idx := strings.Index(uaLower, "chrome/"); idx >= 0 {
+		if v := extractVersion(ua[idx+7:]); v != "" {
+			return "Google Chrome", v
+		}
+	}
+	if idx := strings.Index(uaLower, "firefox/"); idx >= 0 {
+		if v := extractVersion(ua[idx+8:]); v != "" {
+			return "Firefox", v
+		}
+	}
+	if idx := strings.Index(uaLower, "version/"); idx >= 0 {
+		if v := extractVersion(ua[idx+8:]); v != "" {
+			return "Safari", v
+		}
+	}
+	return "Google Chrome", "126"
+}
+
+// extractVersion 从版本号字符串提取主版本（如 "140.0.0.0" → "140"）
+func extractVersion(s string) string {
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			if i > 0 {
+				return s[:i]
+			}
+			return ""
+		}
+	}
+	return s
 }
 
 // doWithRetry 执行请求并按可重试错误退避重试
