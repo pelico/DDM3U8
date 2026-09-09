@@ -8,8 +8,17 @@ WORKDIR /app
 RUN apk add --no-cache ffmpeg su-exec tini tzdata bash
 
 COPY requirements.armv7l.txt .
-# curl_cffi 0.16.0 自带 manylinux_2_28_armv7l 预编译轮子，armv7l 也能装上 TLS 指纹支持
-RUN pip install --no-cache-dir --retries 3 --timeout 60 -r requirements.armv7l.txt
+# alpine (musl) 上 pip 对 armv7l 默认不识别 manylinux 轮子（musllinux_armv7l 又没有），
+# 会掉回 sdist 编译失败。直接下载 manylinux_2_28_armv7l wheel 文件用文件路径安装，
+# 绕过 pip 平台标签检测——curl_cffi 的 .so 静态链接 curl-impersonate，glibc 轮子在 musl 也能跑。
+RUN pip download --no-deps --dest /tmp/wheels --only-binary=:all: \
+        --platform manylinux_2_28_armv7l --python-version 311 \
+        --implementation cp --abi abi3 \
+        curl_cffi==0.16.0 \
+    && pip install --no-cache-dir --retries 3 --timeout 60 /tmp/wheels/curl_cffi-*.whl \
+    && pip install --no-cache-dir --retries 3 --timeout 60 --no-deps \
+        Flask==3.0.0 python-dotenv==1.0.0 yt-dlp==2026.8.19 \
+    && rm -rf /tmp/wheels
 
 COPY templates ./templates
 COPY main.py .
