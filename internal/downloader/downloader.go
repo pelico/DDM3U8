@@ -42,6 +42,17 @@ type Config struct {
 	NoMerge      bool   // 跳过 ffmpeg 合并，仅输出分片
 }
 
+// Progress 进度快照，供 Web 端轮询
+type Progress struct {
+	Total     int   // 分片总数
+	Done      int   // 已完成（成功）
+	Failed    int   // 失败数
+	Current   int   // 当前正在下载的分片序号（最近一个）
+	Status    string // 阶段: fetching / downloading / merging / done / failed
+	OutputFile string
+	Note      string // 最近一条日志/错误信息
+}
+
 // DefaultConfig 返回默认配置
 func DefaultConfig() Config {
 	return Config{
@@ -69,6 +80,10 @@ type Downloader struct {
 	httpc  *http.Client
 	failed int32
 	logger func(format string, v ...interface{})
+
+	// 进度快照（原子读写，供 Web 端轮询）
+	progress     Progress
+	progressMu   sync.RWMutex
 }
 
 // New 创建下载器
@@ -79,19 +94,37 @@ func New(cfg Config, log func(format string, v ...interface{})) *Downloader {
 	return &Downloader{cfg: cfg, logger: log}
 }
 
+// Progress 返回当前进度快照（goroutine-safe）
+func (d *Downloader) Progress() Progress {
+	d.progressMu.RLock()
+	defer d.progressMu.RUnlock()
+	return d.progress
+}
+
+// setProgress 原子更新进度
+func (d *Downloader) setProgress(status, note string) {
+	d.progressMu.Lock()
+	defer d.progressMu.Unlock()
+	d.progress.Status = status
+	d.progress.Note = note
+}
+
 // Run 执行整个下载流程
 func (d *Downloader) Run(ctx context.Context) (*Result, error) {
 	start := time.Now()
 	result := &Result{}
+	d.setProgress("fetching", "拉取 m3u8")
 
 	// 1. 构建带 uTLS 指纹的 HTTP 客户端
 	if err := d.buildClient(); err != nil {
+		d.setProgress("failed", fmt.Sprintf("build http client: %v", err))
 		return nil, fmt.Errorf("build http client: %w", err)
 	}
 
 	// 2. 拉取并解析 m3u8
 	playlist, err := d.fetchPlaylist(ctx, d.cfg.URL)
 	if err != nil {
+		d.setProgress("failed", fmt.Sprintf("fetch playlist: %v", err))
 		return nil, fmt.Errorf("fetch playlist: %w", err)
 	}
 
@@ -115,6 +148,10 @@ func (d *Downloader) Run(ctx context.Context) (*Result, error) {
 	}
 	result.Segments = len(playlist.Segments)
 	d.logger("分片总数: %d (live=%v)", result.Segments, playlist.IsLive)
+	d.progressMu.Lock()
+	d.progress.Total = result.Segments
+	d.progress.Status = "downloading"
+	d.progressMu.Unlock()
 
 	// 4. 准备临时目录
 	if err := os.MkdirAll(d.cfg.TempDir, 0755); err != nil {
@@ -154,13 +191,23 @@ func (d *Downloader) Run(ctx context.Context) (*Result, error) {
 		// 跳过合并，输出分片目录路径
 		output = d.cfg.TempDir
 		d.logger("跳过合并，分片位于: %s", output)
-	} else if err := d.merge(ctx, playlist, output); err != nil {
-		return result, fmt.Errorf("merge: %w", err)
+	} else {
+		d.setProgress("merging", "ffmpeg 合并中")
+		if err := d.merge(ctx, playlist, output); err != nil {
+			d.setProgress("failed", fmt.Sprintf("merge: %v", err))
+			return result, fmt.Errorf("merge: %w", err)
+		}
 	}
 	result.OutputFile = output
 	result.Duration = time.Since(start)
 	d.logger("完成: %s (%d 分片, 失败 %d, 耗时 %s)",
 		output, result.Segments, result.Failed, result.Duration.Truncate(time.Millisecond))
+	d.progressMu.Lock()
+	d.progress.OutputFile = output
+	d.progress.Done = result.Segments - result.Failed
+	d.progress.Failed = result.Failed
+	d.progress.Status = "done"
+	d.progressMu.Unlock()
 	return result, nil
 }
 
@@ -418,6 +465,10 @@ func (d *Downloader) downloadSegments(ctx context.Context, p *m3u8.Playlist, key
 			outPath := filepath.Join(d.cfg.TempDir, fmt.Sprintf("seg_%05d.ts", seg.Index))
 			if _, err := os.Stat(outPath); err == nil {
 				// 已下载（断点续传），跳过
+				d.progressMu.Lock()
+				d.progress.Done++
+				d.progress.Current = seg.Index
+				d.progressMu.Unlock()
 				return
 			}
 			if err := d.downloadFile(ctx, seg.URI, outPath, seg.ByteRange, key, fixedIV, seg.Index); err != nil {
@@ -428,8 +479,17 @@ func (d *Downloader) downloadSegments(ctx context.Context, p *m3u8.Playlist, key
 				}
 				errMu.Unlock()
 				d.logger("seg %d 失败: %v", seg.Index, err)
+				d.progressMu.Lock()
+				d.progress.Failed++
+				d.progress.Current = seg.Index
+				d.progress.Note = fmt.Sprintf("seg %d 失败: %v", seg.Index, err)
+				d.progressMu.Unlock()
 			} else {
 				d.logger("seg %d ok", seg.Index)
+				d.progressMu.Lock()
+				d.progress.Done++
+				d.progress.Current = seg.Index
+				d.progressMu.Unlock()
 			}
 		}()
 	}

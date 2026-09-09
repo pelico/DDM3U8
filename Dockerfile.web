@@ -1,0 +1,73 @@
+# Go + uTLS Web 版 Dockerfile（带 Web 界面 + API，与原 Flask 版 API 兼容）
+# builder 阶段始终在构建机原生架构跑，Go 交叉编译到目标架构（不走 QEMU，快）
+# 产出静态二进制；runtime 阶段只需 alpine + ffmpeg。
+# 支持构建 linux/amd64、linux/arm64、linux/arm/v7 三架构。
+
+#--------- builder：始终在构建机原生架构跑，Go 交叉编译到目标架构 ---------
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
+
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+ARG TARGETVARIANT
+
+WORKDIR /src
+
+# 先拷依赖，利用层缓存
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+# 同时构建 CLI 版（ddm3u8-go）和 Web 版（ddm3u8-web）
+# CGO_ENABLED=0 → 静态二进制；GOARM 仅对 GOARCH=arm 生效（其它架构自动忽略）
+RUN case "$TARGETARCH" in \
+      arm) export GOARM=${TARGETVARIANT#v} ;; \
+    esac && \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+    go build -trimpath -ldflags="-s -w" -o /out/ddm3u8-go ./cmd/ddm3u8-go && \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+    go build -trimpath -ldflags="-s -w" -o /out/ddm3u8-web ./cmd/ddm3u8-web
+
+#--------- runtime：alpine + ffmpeg + 静态二进制 ---------
+FROM alpine:3.20
+
+ENV TZ=Asia/Shanghai
+ENV PORT=8080
+ENV MAX_DOWNLOADS=3
+ENV DOWNLOAD_DIR=/downloads
+ENV FFMPEG_PATH=ffmpeg
+ENV FINGERPRINT=chrome
+# WEB_USER / WEB_PASS 留空则不启用鉴权
+ENV WEB_USER=
+ENV WEB_PASS=
+
+RUN apk add --no-cache ffmpeg tini tzdata ca-certificates
+
+# CLI 和 Web 两个二进制都装进去（CLI 可供宿主直接调用做单任务下载）
+COPY --from=builder /out/ddm3u8-go /usr/local/bin/ddm3u8-go
+COPY --from=builder /out/ddm3u8-web /usr/local/bin/ddm3u8-web
+
+WORKDIR /app
+
+# 简单的 entrypoint：默认起 Web 服务；环境变量透传
+# 若想用 CLI 模式：docker run --rm --entrypoint ddm3u8-go <img> -url ... -save-dir /downloads
+RUN printf '%s\n' '#!/bin/sh' \
+    'set -e' \
+    'mkdir -p "$DOWNLOAD_DIR"' \
+    'echo "=== DDM3U8 (go-core) Web 服务启动 ==="' \
+    'echo "[启动] 端口=$PORT, 并发=$MAX_DOWNLOADS, 下载目录=$DOWNLOAD_DIR, 指纹=$FINGERPRINT"' \
+    'exec /sbin/tini -- /usr/local/bin/ddm3u8-web \' \
+    '  -port "$PORT" \' \
+    '  -download-dir "$DOWNLOAD_DIR" \' \
+    '  -max-downloads "$MAX_DOWNLOADS" \' \
+    '  -ffmpeg "$FFMPEG_PATH" \' \
+    '  -fingerprint "$FINGERPRINT" \' \
+    '  -web-user "$WEB_USER" \' \
+    '  -web-pass "$WEB_PASS"' \
+    > /entrypoint.sh && \
+    chmod +x /entrypoint.sh && \
+    mkdir -p /downloads
+
+VOLUME ["/downloads"]
+EXPOSE 8080
+ENTRYPOINT ["/entrypoint.sh"]
