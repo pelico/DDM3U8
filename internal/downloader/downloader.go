@@ -92,6 +92,24 @@ type Downloader struct {
 	// 进度快照（原子读写，供 Web 端轮询）
 	progress     Progress
 	progressMu   sync.RWMutex
+
+	// 已下载字节数（含断点续传预扫描的已存在分片）
+	// 用于估算最终文件大小：平均分片大小 × 总数
+	downloadedBytes int64
+}
+
+// humanBytes 把字节数格式化为人类可读大小（如 2.8GB）
+func humanBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%dB", n)
+	}
+	div, exp := int64(unit), 0
+	for x := n / unit; x >= unit; x /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f%cB", float64(n)/float64(div), "KMGTPE"[exp])
 }
 
 // New 创建下载器
@@ -176,20 +194,23 @@ func (d *Downloader) Run(ctx context.Context) (*Result, error) {
 	// 同时清理上次中断残留的 .part 占位文件，避免 downloadFile 的 O_EXCL 失败
 	{
 		existing := 0
+		var existingBytes int64
 		for _, seg := range playlist.Segments {
 			p := filepath.Join(d.cfg.TempDir, fmt.Sprintf("seg_%05d.ts", seg.Index))
 			if info, err := os.Stat(p); err == nil && info.Size() > 0 {
 				existing++
+				existingBytes += info.Size()
 			} else {
 				// 清理该分片对应的残留 .part 文件
 				_ = os.Remove(p + ".part")
 			}
 		}
 		if existing > 0 {
+			atomic.StoreInt64(&d.downloadedBytes, existingBytes)
 			d.progressMu.Lock()
 			d.progress.Done = existing
 			d.progressMu.Unlock()
-			d.logger("断点续传: 已有 %d/%d 分片，跳过这些", existing, result.Segments)
+			d.logger("断点续传: 已有 %d/%d 分片 (%s)，跳过这些", existing, result.Segments, humanBytes(existingBytes))
 		}
 	}
 
@@ -646,14 +667,19 @@ func (d *Downloader) downloadSegments(ctx context.Context, p *m3u8.Playlist, key
 				d.progress.Note = fmt.Sprintf("seg %d 失败: %v", seg.Index, err)
 				d.progressMu.Unlock()
 			} else {
+				// 累加已下载字节（用于估算最终文件大小）
+				if info, err := os.Stat(outPath); err == nil {
+					atomic.AddInt64(&d.downloadedBytes, info.Size())
+				}
 				// 先更新进度，再通过 logger 把快照传给上层（避免上层再 RLock progressMu 读）
 				d.progressMu.Lock()
 				d.progress.Done++
 				d.progress.Current = seg.Index
 				snap := d.progress
 				d.progressMu.Unlock()
-				// 用 "progress done/total/failed" 格式，上层据此前缀做节流展示
-				d.logger("progress %d/%d/%d", snap.Done, snap.Total, snap.Failed)
+				// 用 "progress done/total/failed/bytes" 格式，上层据此前缀做节流展示
+				bytes := atomic.LoadInt64(&d.downloadedBytes)
+				d.logger("progress %d/%d/%d/%d", snap.Done, snap.Total, snap.Failed, bytes)
 			}
 		}()
 	}

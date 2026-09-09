@@ -205,12 +205,21 @@ func (m *TaskManager) runTask(t *Task) {
 				return
 			}
 			var done, total, failed int
-			_, _ = fmt.Sscanf(msg, "progress %d/%d/%d", &done, &total, &failed)
+			var bytes int64
+			_, _ = fmt.Sscanf(msg, "progress %d/%d/%d/%d", &done, &total, &failed, &bytes)
 			m.mu.Lock()
 			defer m.mu.Unlock()
 			if total > 0 {
-				t.Log = fmt.Sprintf("下载中: %d/%d (失败 %d, %.0f%%)",
+				logLine := fmt.Sprintf("下载中: %d/%d (失败 %d, %.0f%%)",
 					done, total, failed, float64(done)/float64(total)*100)
+				// 基于已下载字节估算最终文件大小
+				if done > 0 && bytes > 0 {
+					avg := bytes / int64(done)
+					estTotal := avg * int64(total)
+					logLine += fmt.Sprintf(" | 已下 %s / 预估 %s",
+						formatBytes(bytes), formatBytes(estTotal))
+				}
+				t.Log = logLine
 			} else {
 				t.Log = fmt.Sprintf("下载中: 已完成 %d (失败 %d)", done, failed)
 			}
@@ -282,6 +291,20 @@ func removeTempDir(t *Task) {
 		return
 	}
 	_ = os.RemoveAll(t.cfg.TempDir)
+}
+
+// formatBytes 把字节数格式化为人类可读大小（如 2.8GB）
+func formatBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%dB", n)
+	}
+	div, exp := int64(unit), 0
+	for x := n / unit; x >= unit; x /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f%cB", float64(n)/float64(div), "KMGTPE"[exp])
 }
 
 // Pause 暂停任务：取消正在执行的下载 context，但保留 temp_dir 与已下载分片，
