@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -560,29 +561,23 @@ func safeSubPath(rootDir, sub string) (string, bool) {
 	return joined, true
 }
 
-// extractM3U8URLs 从文本中提取所有 m3u8 链接（按行/空格分隔）
+// extractM3U8URLs 从文本中提取所有 m3u8 链接
+// 兼容多种粘贴格式：
+//   - 每行一个 URL
+//   - 空格/Tab 分隔
+//   - 多个 URL 直接连在一起无分隔符（如 https://a.m3u8https://b.m3u8）
+//   - URL 外带反引号、引号、括号等
+//   - URL 带 query string（如 video.m3u8?token=xxx）
+var m3u8URLRe = regexp.MustCompile(`https?://[^\s'"` + "`" + `\)\}\]]*?\.m3u8(?:[?#][^\s'"` + "`" + `\)\}\]]*)?`)
+
 func extractM3U8URLs(text string) []string {
 	urls := []string{}
 	seen := map[string]bool{}
-	for _, line := range strings.FieldsFunc(text, func(r rune) bool {
-		return r == '\n' || r == '\r' || r == ' ' || r == '\t'
-	}) {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		// 去掉反引号（兼容粘贴习惯）
-		line = strings.Trim(line, "`")
-		lower := strings.ToLower(line)
-		if !strings.Contains(lower, "m3u8") {
-			continue
-		}
-		if !strings.HasPrefix(lower, "http://") && !strings.HasPrefix(lower, "https://") {
-			continue
-		}
-		if !seen[line] {
-			seen[line] = true
-			urls = append(urls, line)
+	for _, m := range m3u8URLRe.FindAllString(text, -1) {
+		u := strings.Trim(m, "`")
+		if !seen[u] {
+			seen[u] = true
+			urls = append(urls, u)
 		}
 	}
 	return urls
