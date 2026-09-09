@@ -219,12 +219,21 @@ func (m *TaskManager) runTask(t *Task) {
 	// 执行下载
 	result, err := t.dl.Run(ctx)
 	m.mu.Lock()
+	// 先保存 dl 引用（lastNote 需要读 progress），再清空运行时字段
+	dl := t.dl
 	t.cancel = nil
 	t.dl = nil
 
 	if err != nil {
+		// 若是 Pause 主动取消 ctx（status 已被设为 已暂停），保留已暂停状态，
+		// 不覆盖为失败——这样前端能正确显示"已暂停"和"恢复+强合"按钮
+		if t.Status == StatusPaused {
+			m.mu.Unlock()
+			m.saveTasks() // 持久化
+			return
+		}
 		t.Status = StatusFailed
-		t.Log = fmt.Sprintf("❌ %v  末尾输出: %s", err, lastNote(t.dl))
+		t.Log = fmt.Sprintf("❌ %v  末尾输出: %s", err, lastNote(dl))
 		m.mu.Unlock()
 		// 失败时保留 temp_dir，方便点"强合"复用已下载分片
 		m.saveTasks() // 持久化：状态变更
@@ -268,13 +277,14 @@ func removeTempDir(t *Task) {
 // 之后可点"恢复"断点续传。状态置为"已暂停"，对齐 armv7l 的 pause 语义。
 func (m *TaskManager) Pause(id string) bool {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	t, ok := m.tasks[id]
 	if !ok {
+		m.mu.Unlock()
 		return false
 	}
 	// 仅活跃任务可暂停
 	if t.Status != StatusDownload && t.Status != StatusQueued && t.Status != StatusMerge {
+		m.mu.Unlock()
 		return false
 	}
 	if t.cancel != nil {
@@ -282,6 +292,9 @@ func (m *TaskManager) Pause(id string) bool {
 	}
 	t.Status = StatusPaused
 	t.Log = "已暂停，保留缓存可恢复"
+	m.mu.Unlock()
+	// 注意：必须在锁外调用 saveTasks，否则 saveTasks 内部 RLock 会与
+	// 当前 goroutine 持有的 Lock 死锁（Go RWMutex 不允许同 goroutine 既 Lock 又 RLock）
 	m.saveTasks() // 持久化
 	return true
 }
