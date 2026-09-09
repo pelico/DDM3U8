@@ -159,11 +159,38 @@ func (d *Downloader) Run(ctx context.Context) (*Result, error) {
 	d.progressMu.Lock()
 	d.progress.Total = result.Segments
 	d.progress.Status = "downloading"
+	// 断点续传预扫描：恢复任务时，进度从真实磁盘已存在分片数开始，
+	// 避免前端看到"进度从 0 跳回真实值"的回退错觉
+	d.progress.Done = 0
+	d.progress.Failed = 0
+	d.progress.Current = 0
 	d.progressMu.Unlock()
 
 	// 4. 准备临时目录
 	if err := os.MkdirAll(d.cfg.TempDir, 0755); err != nil {
 		return nil, fmt.Errorf("create temp dir: %w", err)
+	}
+
+	// 4.5 预扫描已存在的完整分片文件（大小>0），预填 progress.Done
+	// 这样恢复任务时前端进度条不会从 0 跳到真实值，避免"进度回退"错觉
+	// 同时清理上次中断残留的 .part 占位文件，避免 downloadFile 的 O_EXCL 失败
+	{
+		existing := 0
+		for _, seg := range playlist.Segments {
+			p := filepath.Join(d.cfg.TempDir, fmt.Sprintf("seg_%05d.ts", seg.Index))
+			if info, err := os.Stat(p); err == nil && info.Size() > 0 {
+				existing++
+			} else {
+				// 清理该分片对应的残留 .part 文件
+				_ = os.Remove(p + ".part")
+			}
+		}
+		if existing > 0 {
+			d.progressMu.Lock()
+			d.progress.Done = existing
+			d.progressMu.Unlock()
+			d.logger("断点续传: 已有 %d/%d 分片，跳过这些", existing, result.Segments)
+		}
 	}
 
 	// 5. 如有 EXT-X-MAP（fMP4 初始化段），先下载
@@ -596,10 +623,11 @@ func (d *Downloader) downloadSegments(ctx context.Context, p *m3u8.Playlist, key
 			defer func() { <-sem }()
 
 			outPath := filepath.Join(d.cfg.TempDir, fmt.Sprintf("seg_%05d.ts", seg.Index))
-			if _, err := os.Stat(outPath); err == nil {
+			// 校验文件存在且大小>0：避免跳过上次网络中断写一半的损坏分片
+			if info, err := os.Stat(outPath); err == nil && info.Size() > 0 {
 				// 已下载（断点续传），跳过
+				// 注意：预扫描已把 Done 算进去了，这里只更新 Current，不重复 Done++
 				d.progressMu.Lock()
-				d.progress.Done++
 				d.progress.Current = seg.Index
 				d.progressMu.Unlock()
 				return
@@ -645,6 +673,18 @@ func (d *Downloader) downloadFile(ctx context.Context, segURL, outPath string, b
 		case <-time.After(jitter):
 		}
 	}
+	// 原子占位：用 .part 临时文件 + O_EXCL 创建，防止恢复任务时旧 goroutine
+	// 还未完全退出导致同一分片被重复下载（race condition）
+	partPath := outPath + ".part"
+	pf, err := os.OpenFile(partPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
+	if err != nil {
+		// .part 已存在：要么上次中断残留(大小可能不全)，要么有 goroutine 在下载
+		// 直接返回错误让上层当失败处理，避免重复请求加剧封锁
+		return fmt.Errorf("seg %d already being downloaded or stale .part exists: %w", segIndex, err)
+	}
+	pf.Close()
+	defer os.Remove(partPath) // 无论成功失败都清理 .part（成功后 outPath 已写入）
+
 	req, err := http.NewRequestWithContext(ctx, "GET", segURL, nil)
 	if err != nil {
 		return err
@@ -675,7 +715,12 @@ func (d *Downloader) downloadFile(ctx context.Context, segURL, outPath string, b
 		}
 		data = dec
 	}
-	return os.WriteFile(outPath, data, 0644)
+	// 先写 .part 再 rename 为最终文件，确保 outPath 要么不存在要么完整
+	// 避免 WriteFile 中途被中断留下半截损坏文件被误判为已完成
+	if err := os.WriteFile(partPath, data, 0644); err != nil {
+		return err
+	}
+	return os.Rename(partPath, outPath)
 }
 
 // computeIV 计算解密 IV
