@@ -1,4 +1,6 @@
 Flask==3.0.0
 python-dotenv==1.0.0
 yt-dlp==2024.12.23
-curl_cffi>=0.7.0
+# yt-dlp 2024.12.23 只支持 curl_cffi 0.7.0/0.7.1，装新版会 raise ImportError
+# 导致 --impersonate chrome 报 "not available"。必须锁版本 <0.7.2。
+curl_cffi>=0.7.0,<0.7.2
