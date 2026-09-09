@@ -200,13 +200,16 @@
                 </div>
                 <div id="advancedOptions" style="display: block; margin-bottom: 10px;">
                     <div class="input-group" style="margin-bottom: 8px; gap: 10px; align-items: center;">
-                        <label style="font-size: 13px; color: #4b5563; white-space: nowrap;">📋 快速预设：</label>
+                        <label style="font-size: 13px; color: #4b5563; white-space: nowrap;">📋 浏览器档：</label>
                         <select id="presetSelect" style="padding: 8px; border: 1px solid var(--border); border-radius: 8px; flex: 1;">
-                            <option value="">— 选择站点预设（自动填 UA/Origin/Referer/指纹）—</option>
-                            <option value="missav_android_edge">missav 站点（移动 Edge UA）</option>
-                            <option value="missav_win_chrome">missav 站点（桌面 Chrome UA）</option>
-                            <option value="missav_ios_safari">missav 站点（iOS Safari UA）</option>
-                            <option value="generic_cdn">通用 CDN（无 Referer，纯分片直连）</option>
+                            <option value="">— 选择浏览器档（自动填 UA + 指纹）—</option>
+                            <option value="android_edge">移动 Edge 140（Android）</option>
+                            <option value="android_chrome">移动 Chrome 140（Android）</option>
+                            <option value="win_chrome">桌面 Chrome 140（Win）</option>
+                            <option value="win_edge">桌面 Edge 140（Win）</option>
+                            <option value="ios_safari">iOS Safari 17.5</option>
+                            <option value="mac_safari">macOS Safari 17.5</option>
+                            <option value="firefox">Firefox 130（桌面）</option>
                         </select>
                     </div>
                     <input type="text" class="input-full" name="user_agent" placeholder="选填：User-Agent（留空使用默认浏览器UA）" style="margin-bottom: 8px;">
@@ -226,11 +229,11 @@
                     <p style="font-size: 12px; color: #6b7280; margin: 8px 0 0 0; line-height: 1.6;">
                         💡 <b>提示：</b><br>
                         • 并发默认3避免触发风控，非限制资源可调到10<br>
-                        • UA 和 TLS指纹要匹配：桌面Chrome UA 配 chrome 指纹，移动端 Edge/Chrome UA 也配 chrome，iOS Safari UA 配 safari，Firefox UA 配 firefox<br>
+                        • UA 和 TLS指纹要匹配：移动端 Edge/Chrome、桌面 Chrome/Edge 都配 chrome 指纹，iOS/macOS Safari 配 safari，Firefox 配 firefox<br>
                         • sec-ch-ua 系列会根据 UA 自动推导，无需手动填<br>
                         • Cookie 可直接整段粘贴（含 Cookie: 前缀、Path/HttpOnly 等属性都会自动清洗，只保留 name=value）<br>
-                        • 握手被RST时：①换TLS指纹 ②补完整Cookie ③换出口IP<br>
-                        • 同站点Cookie可复用，换站点才需重新获取
+                        • 所有字段填一次后会自动保存，下次打开页面自动恢复；点"🗑️ 清除"才清空<br>
+                        • 握手被RST时：①换TLS指纹 ②补完整Cookie ③换出口IP
                     </p>
                 </div>
                 <input type="text" class="input-full" name="sub_path" placeholder="选填：下载子目录（如 movie1）不填则存到根目录">
@@ -424,10 +427,10 @@
                 const response = await apiFetch('/down', { method: 'POST', body: new URLSearchParams(new FormData(this)) });
                 const data = await response.json().catch(() => ({}));
                 // 只清 url 和 sub_path（每个任务不同），保留 referer/cookie/ua/指纹/并发
-                // 方便同站点连续下载多个视频时不用重复填写
+                // 持久化保留的字段，下次打开页面也能恢复
                 this.elements['url'].value = '';
                 if (this.elements['sub_path']) this.elements['sub_path'].value = '';
-                // name 保留（用户可能用序号命名），但如果上次改过名可手动清
+                saveFormState();
                 if (data.message) showToast(data.message);
                 else showToast('任务添加成功');
                 refreshTasks(true);
@@ -438,8 +441,9 @@
             }
         };
 
-        // 一键清除：重置所有表单字段（含高级选项 + 预设下拉）
+        // 一键清除：清空 localStorage + 重置所有表单字段
         document.getElementById('clearFormBtn').onclick = function() {
+            try { localStorage.removeItem(FORM_STATE_KEY); } catch (e) {}
             const form = document.getElementById('downForm');
             form.reset();
             // reset 后恢复默认值（reset 会让 select/number 回到 HTML 默认）
@@ -461,32 +465,35 @@
                 : '⚙️ 收起高级选项';
         };
 
-        // 站点快速预设：选了就自动填 UA/Origin/Referer/TLS指纹
-        // Cookie 仍需手动粘贴（每个视频的 cf_clearance 不一样，但同站点可复用）
+        // 浏览器档位预设：选了就自动填 UA + TLS指纹（Origin/Referer 保留你已填的）
         const PRESETS = {
-            missav_android_edge: {
+            android_edge: {
                 ua: 'Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36 Edg/140.0.0.0',
-                origin: 'https://missav.mrst.one',
-                referer: 'https://missav.mrst.one',
                 fingerprint: 'chrome',
             },
-            missav_win_chrome: {
+            android_chrome: {
+                ua: 'Mozilla/5.0 (Linux; Android 10; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36',
+                fingerprint: 'chrome',
+            },
+            win_chrome: {
                 ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
-                origin: 'https://missav.mrst.one',
-                referer: 'https://missav.mrst.one',
                 fingerprint: 'chrome',
             },
-            missav_ios_safari: {
+            win_edge: {
+                ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36 Edg/140.0.0.0',
+                fingerprint: 'chrome',
+            },
+            ios_safari: {
                 ua: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1',
-                origin: 'https://missav.mrst.one',
-                referer: 'https://missav.mrst.one',
                 fingerprint: 'safari',
             },
-            generic_cdn: {
-                ua: '',
-                origin: '',
-                referer: '',
-                fingerprint: 'chrome',
+            mac_safari: {
+                ua: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15',
+                fingerprint: 'safari',
+            },
+            firefox: {
+                ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:130.0) Gecko/20100101 Firefox/130.0',
+                fingerprint: 'firefox',
             },
         };
         document.getElementById('presetSelect').onchange = function() {
@@ -494,12 +501,44 @@
             if (!p) return;
             const form = document.getElementById('downForm');
             form.elements['user_agent'].value = p.ua;
-            form.elements['origin'].value = p.origin;
-            form.elements['referer'].value = p.referer || 'https://';
             form.elements['fingerprint'].value = p.fingerprint;
-            // 预设不覆盖 Cookie（用户可能已填），只填空字段时才填
-            showToast('预设已填入 UA/Origin/Referer/指纹，请补 Cookie');
+            // Origin/Referer 保留用户已填的，不覆盖（换站点时用户自己改）
+            saveFormState();
+            showToast('已填入 UA + TLS指纹，请补 Origin/Referer/Cookie');
         };
+
+        // 表单状态持久化（localStorage）
+        // 除 url/sub_path 外，所有字段填一次后自动保存，下次打开页面自动恢复
+        // 只有"🗑️ 清除"按钮才会清空
+        const FORM_STATE_KEY = 'ddm3u8_form_state_v1';
+        const PERSIST_FIELDS = ['name', 'referer', 'origin', 'user_agent', 'cookie', 'concurrency', 'fingerprint', 'custom_headers'];
+
+        function saveFormState() {
+            const form = document.getElementById('downForm');
+            const state = {};
+            PERSIST_FIELDS.forEach(function(name) {
+                const el = form.elements[name];
+                if (el) state[name] = el.value;
+            });
+            try { localStorage.setItem(FORM_STATE_KEY, JSON.stringify(state)); } catch (e) {}
+        }
+
+        function loadFormState() {
+            const form = document.getElementById('downForm');
+            let state = {};
+            try { state = JSON.parse(localStorage.getItem(FORM_STATE_KEY) || '{}'); } catch (e) { return; }
+            PERSIST_FIELDS.forEach(function(name) {
+                const el = form.elements[name];
+                if (el && state[name] !== undefined && state[name] !== '') el.value = state[name];
+            });
+        }
+
+        // 输入时实时保存
+        document.getElementById('downForm').addEventListener('input', saveFormState);
+        document.getElementById('downForm').addEventListener('change', saveFormState);
+
+        // 页面加载时恢复表单
+        loadFormState();
 
         document.getElementById('localMergeForm').onsubmit = async function(e) {
             e.preventDefault();
