@@ -988,6 +988,7 @@ def start_task(url, name, task_id, download_dir=None, headers=None, core=None):
             "-o", temp_ts,
             "--concurrent-fragments", "10",
             "--hls-prefer-native",
+            "--impersonate", "chrome",
             "--no-part",
             "--no-mtime",
             "--fixup", "never",

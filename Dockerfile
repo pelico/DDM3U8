@@ -1,4 +1,4 @@
-FROM python:3.11-alpine
+FROM python:3.11-slim
 
 ARG TARGETARCH
 
@@ -7,10 +7,9 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.ustc.edu.cn/g' /etc/apk/repositories && \
-    apk update && \
-    apk add --no-cache ffmpeg tzdata su-exec shadow && \
-    rm -rf /var/cache/apk/*
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ffmpeg gosu tzdata && \
+    rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
@@ -20,8 +19,8 @@ COPY vendor /tmp/vendor
 RUN set -eux; \
     ARCH="${TARGETARCH:-$(uname -m)}"; \
     case "$ARCH" in \
-      amd64|x86_64) RE_TAR="/tmp/vendor/N_m3u8DL-RE_v0.5.1-beta_linux-musl-x64_20251029.tar.gz" ;; \
-      arm64|aarch64) RE_TAR="/tmp/vendor/N_m3u8DL-RE_v0.5.1-beta_linux-musl-arm64_20251029.tar.gz" ;; \
+      amd64|x86_64) RE_TAR="/tmp/vendor/N_m3u8DL-RE_v0.5.1-beta_linux-x64_20251029.tar.gz" ;; \
+      arm64|aarch64) RE_TAR="/tmp/vendor/N_m3u8DL-RE_v0.5.1-beta_linux-arm64_20251029.tar.gz" ;; \
       *) echo "Unsupported arch: $ARCH"; exit 1 ;; \
     esac; \
     mkdir -p /tmp/re_extract; \
@@ -41,21 +40,13 @@ RUN printf '%s\n' '#!/bin/sh' \
     'PGID=${PGID:-0}' \
     'if [ "$PUID" != "0" ] || [ "$PGID" != "0" ]; then' \
     '    echo "Setting up user with PUID=$PUID, PGID=$PGID"' \
-    '    if ! getent group appuser > /dev/null 2>&1; then' \
-    '        groupadd -g "$PGID" appuser' \
-    '    else' \
-    '        groupmod -g "$PGID" appuser' \
-    '    fi' \
-    '    if ! id appuser > /dev/null 2>&1; then' \
-    '        useradd -u "$PUID" -g "$PGID" -d /app appuser' \
-    '    else' \
-    '        usermod -u "$PUID" -g "$PGID" appuser' \
-    '    fi' \
+    '    groupadd -g "$PGID" appuser 2>/dev/null || groupmod -g "$PGID" appuser' \
+    '    id appuser >/dev/null 2>&1 || useradd -u "$PUID" -g "$PGID" -d /app appuser' \
     '    chown -R "$PUID:$PGID" /downloads' \
     'fi' \
     'echo "Starting DDM3U8 service..."' \
     'if [ "$PUID" != "0" ] || [ "$PGID" != "0" ]; then' \
-    '    exec su-exec appuser python main.py' \
+    '    exec gosu appuser python main.py' \
     'else' \
     '    exec python main.py' \
     'fi' > /entrypoint.sh && \
@@ -63,7 +54,5 @@ RUN printf '%s\n' '#!/bin/sh' \
     mkdir -p /downloads
 
 VOLUME ["/downloads"]
-
 EXPOSE 8080
-
 ENTRYPOINT ["/entrypoint.sh"]
