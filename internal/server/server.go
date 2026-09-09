@@ -374,12 +374,24 @@ func (s *Server) downHandler(w http.ResponseWriter, r *http.Request) {
 
 	// 创建任务
 	created := 0
+	// 并发数（前端传入，默认3，范围1-10；非限制资源可手动调高）
+	concurrency := 3
+	if c := strings.TrimSpace(r.FormValue("concurrency")); c != "" {
+		if n, err := strconv.Atoi(c); err == nil && n >= 1 && n <= 10 {
+			concurrency = n
+		}
+	}
+	// TLS 指纹（前端传入，默认 chrome，可选 safari/firefox）
+	fingerprint := strings.TrimSpace(r.FormValue("fingerprint"))
+	if fingerprint != "" && fingerprint != "chrome" && fingerprint != "safari" && fingerprint != "firefox" {
+		fingerprint = "" // 非法值置空，用默认
+	}
 	for i, u := range urls {
 		name := rawName
 		if len(urls) > 1 {
 			name = fmt.Sprintf("%s_%02d", rawName, i+1)
 		}
-		_ = s.tm.CreateWithDir(u, name, headers, downloadDir)
+		_ = s.tm.CreateWithDir(u, name, headers, downloadDir, concurrency, fingerprint)
 		created++
 	}
 

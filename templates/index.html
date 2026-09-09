@@ -195,16 +195,26 @@
                 <input type="text" class="input-full" name="referer" value="https://" placeholder="选填：全局 Referer">
                 <div style="margin: 10px 0;">
                     <button type="button" id="toggleAdvanced" class="btn btn-ghost" style="width: 100%; font-size: 13px;">
-                        ⚙️ 高级选项（User-Agent / Origin / Cookie / 自定义头）
+                        ⚙️ 高级选项（UA / 指纹 / 并发 / 自定义头）
                     </button>
                 </div>
                 <div id="advancedOptions" style="display: none; margin-bottom: 10px;">
                     <input type="text" class="input-full" name="user_agent" placeholder="选填：User-Agent（留空使用默认浏览器UA）" style="margin-bottom: 8px;">
                     <input type="text" class="input-full" name="origin" placeholder="选填：Origin" style="margin-bottom: 8px;">
                     <input type="text" class="input-full" name="cookie" placeholder="选填：Cookie（整段字符串）" style="margin-bottom: 8px;">
+                    <div class="input-group" style="margin-bottom: 8px; gap: 10px; align-items: center;">
+                        <label style="font-size: 13px; color: #4b5563; white-space: nowrap;">并发数：</label>
+                        <input type="number" name="concurrency" value="3" min="1" max="10" style="width: 70px; padding: 8px; border: 1px solid var(--border); border-radius: 8px;">
+                        <label style="font-size: 13px; color: #4b5563; white-space: nowrap; margin-left: 10px;">TLS指纹：</label>
+                        <select name="fingerprint" style="padding: 8px; border: 1px solid var(--border); border-radius: 8px; flex: 1;">
+                            <option value="chrome">chrome（默认）</option>
+                            <option value="safari">safari</option>
+                            <option value="firefox">firefox</option>
+                        </select>
+                    </div>
                     <textarea class="input-full" name="custom_headers" rows="2" placeholder="选填：自定义请求头，每行一个，格式 Key:Value&#10;例如：&#10;Sec-Fetch-Site: cross-site&#10;Sec-Fetch-Mode: cors"></textarea>
                     <p style="font-size: 12px; color: #6b7280; margin: 8px 0 0 0;">
-                        💡 提示：手机浏览器能播但下载失败时，优先补 Referer + Origin；若仍失败可从浏览器 Network 面板复制完整 Cookie。
+                        💡 提示：并发默认3避免触发风控，非限制资源可调到10；握手被RST时换TLS指纹重试。
                     </p>
                 </div>
                 <input type="text" class="input-full" name="sub_path" placeholder="选填：下载子目录（如 movie1）不填则存到根目录">
@@ -411,7 +421,7 @@
             const shown = panel.style.display !== 'none';
             panel.style.display = shown ? 'none' : 'block';
             this.textContent = shown
-                ? '⚙️ 高级选项（User-Agent / Origin / Cookie / 自定义头）'
+                ? '⚙️ 高级选项（UA / 指纹 / 并发 / 自定义头）'
                 : '⚙️ 收起高级选项';
         };
 

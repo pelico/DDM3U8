@@ -79,11 +79,12 @@ func NewTaskManager(maxParallel int, downloadDir, tempBaseDir, ffmpegPath, finge
 
 // Create 创建新任务（使用默认下载目录）
 func (m *TaskManager) Create(url, name string, headers map[string]string) string {
-	return m.CreateWithDir(url, name, headers, m.downloadDir)
+	return m.CreateWithDir(url, name, headers, m.downloadDir, 0, "")
 }
 
 // CreateWithDir 创建新任务（指定下载目录，用于 sub_path）
-func (m *TaskManager) CreateWithDir(url, name string, headers map[string]string, downloadDir string) string {
+// concurrency/fingerprint 由前端传入，未传则用 manager 默认值（默认3并发、chrome指纹）
+func (m *TaskManager) CreateWithDir(url, name string, headers map[string]string, downloadDir string, concurrency int, fingerprint string) string {
 	id := uuid.New().String()[:8]
 	ts := time.Now().Format("0102_150405")
 	fullName := fmt.Sprintf("%s_%s_%s", name, ts, id[:3])
@@ -92,6 +93,12 @@ func (m *TaskManager) CreateWithDir(url, name string, headers map[string]string,
 	cfg.URL = url
 	cfg.FFmpegPath = m.ffmpegPath
 	cfg.Fingerprint = m.fingerprint
+	if fingerprint != "" {
+		cfg.Fingerprint = fingerprint // 前端传入的指纹覆盖全局
+	}
+	if concurrency > 0 {
+		cfg.Concurrency = concurrency // 前端传入的并发覆盖默认
+	}
 	cfg.Headers = headers
 	cfg.Output = filepath.Join(downloadDir, fullName+".mp4")
 	cfg.TempDir = filepath.Join(downloadDir, fullName+"_temp")
@@ -214,6 +221,10 @@ func (m *TaskManager) runTask(t *Task) {
 		defer m.mu.Unlock()
 		t.Log = msg
 	})
+	// 注入握手失败回调：到阈值(5次)自动暂停，避免无限触发 CDN bot 风控
+	t.dl.OnHandshakeFails = func() {
+		m.Pause(t.ID)
+	}
 	m.mu.Unlock()
 
 	// 执行下载

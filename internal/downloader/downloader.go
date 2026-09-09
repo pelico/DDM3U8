@@ -57,9 +57,9 @@ type Progress struct {
 // DefaultConfig 返回默认配置
 func DefaultConfig() Config {
 	return Config{
-		Concurrency:  10,
+		Concurrency:  3, // 默认 3，避免短时间大量握手触发 CDN bot 风控
 		RetryMax:     10,
-		RetryBackoff: 1 * time.Second,
+		RetryBackoff: 5 * time.Second, // 退避起步 5 秒，避免快速 retry 加剧风控
 		Timeout:      60 * time.Second,
 		Fingerprint:  "chrome",
 		UserAgent:    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
@@ -81,6 +81,12 @@ type Downloader struct {
 	httpc  *http.Client
 	failed int32
 	logger func(format string, v ...interface{})
+
+	// 握手失败计数器：连续 uTLS handshake 失败次数，到阈值(5次)后
+	// 通过 ctx cancel 自动暂停任务，避免无限触发 CDN bot 风控
+	handshakeFails int32
+	// OnHandshakeFails 由 TaskManager 注入的回调：握手失败到阈值时触发暂停
+	OnHandshakeFails func()
 
 	// 进度快照（原子读写，供 Web 端轮询）
 	progress     Progress
@@ -307,8 +313,17 @@ func (d *Downloader) buildClient() error {
 		}
 		if err := tlsConn.Handshake(); err != nil {
 			rawConn.Close()
+			// 握手失败计数：到阈值(5次)后触发自动暂停，避免无限触发 CDN bot 风控
+			n := atomic.AddInt32(&d.handshakeFails, 1)
+			d.logger("握手失败 %d/5: %v", n, err)
+			if n >= 5 && d.OnHandshakeFails != nil {
+				d.logger("连续握手失败 %d 次，自动暂停任务避免触发风控", n)
+				go d.OnHandshakeFails()
+			}
 			return nil, fmt.Errorf("uTLS handshake: %w", err)
 		}
+		// 握手成功则重置计数
+		atomic.StoreInt32(&d.handshakeFails, 0)
 		return tlsConn, nil
 	}
 	transport := &http.Transport{
