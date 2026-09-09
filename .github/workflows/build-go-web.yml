@@ -23,66 +23,24 @@ env:
   IMAGE_NAME: ddm3u8
 
 jobs:
-  # ---------- 多架构 Docker 镜像：Web 版（带前端页面 + API） ----------
-  docker-web:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Docker metadata (web)
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=raw,value=go-web
-            type=raw,value=go-web-latest
-            type=ref,event=tag
-            type=sha,prefix=go-web-sha-
-
-      - name: Build and push (multi-arch, Web 版)
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile.web
-          platforms: linux/amd64,linux/arm64,linux/arm/v7
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          no-cache: true
-          cache-from: type=gha,scope=go-web-v3
-          cache-to: type=gha,scope=go-web-v3,mode=max
-
-  # ---------- 单架构专用 tag（给老 Docker 用，避免多架构 manifest 选错） ----------
+  # ---------- 单架构专用 tag（三架构各推一个 tag，老 Docker 直接 pull） ----------
+  # 不用 docker/build-push-action，直接用 docker buildx build 命令行
+  # 这样能用 --build-arg 显式传 TARGET_PLATFORM，绕开 buildx 自动注入的坑
   single-arch:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         include:
-          - arch: armv7l
-            platform: linux/arm/v7
-            tag_suffix: armv7l
-          - arch: arm64
-            platform: linux/arm64
-            tag_suffix: arm64
           - arch: amd64
             platform: linux/amd64
             tag_suffix: amd64
+          - arch: arm64
+            platform: linux/arm64
+            tag_suffix: arm64
+          - arch: armv7l
+            platform: linux/arm/v7
+            tag_suffix: armv7l
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -101,15 +59,15 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push single-arch (${{ matrix.arch }})
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile.web
-          platforms: ${{ matrix.platform }}
-          push: true
-          tags: ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:go-web-${{ matrix.tag_suffix }}
-          no-cache: true
-          cache-from: type=gha,scope=go-web-single-v3
+        run: |
+          docker buildx build \
+            --platform ${{ matrix.platform }} \
+            --file Dockerfile.web \
+            --tag ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:go-web-${{ matrix.tag_suffix }} \
+            --tag ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:go-web-${{ matrix.tag_suffix }}-${{ github.ref_name }} \
+            --build-arg TARGET_PLATFORM=${{ matrix.platform }} \
+            --push \
+            .
 
   # ---------- Docker 镜像 tar 包（三架构，docker load 加载，不依赖 pull 选架构） ----------
   tars:
@@ -139,12 +97,13 @@ jobs:
           docker buildx build \
             --platform ${{ matrix.platform }} \
             --file Dockerfile.web \
-            --tag ${IMAGE_NAME}:go-web-${{ matrix.arch }} \
-            --output type=docker,dest=${IMAGE_NAME}-go-web-${{ matrix.arch }}.tar \
+            --tag ${{ env.IMAGE_NAME }}:go-web-${{ matrix.arch }} \
+            --build-arg TARGET_PLATFORM=${{ matrix.platform }} \
+            --output type=docker,dest=${{ env.IMAGE_NAME }}-go-web-${{ matrix.arch }}.tar \
             .
 
       - name: Show image size
-        run: ls -lh ${IMAGE_NAME}-go-web-${{ matrix.arch }}.tar
+        run: ls -lh ${{ env.IMAGE_NAME }}-go-web-${{ matrix.arch }}.tar
 
       - name: Upload tar artifact
         uses: actions/upload-artifact@v4
@@ -177,75 +136,46 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.25'
-          cache: true
 
-      - name: Cross-compile CLI (${{ matrix.arch }})
+      - name: Build CLI binary (${{ matrix.arch }})
         env:
-          CGO_ENABLED: 0
           GOOS: linux
           GOARCH: ${{ matrix.goarch }}
           GOARM: ${{ matrix.goarm }}
+          CGO_ENABLED: 0
         run: |
           mkdir -p out
-          go build -trimpath -ldflags="-s -w" -o out/ddm3u8-go-${{ matrix.arch }} ./cmd/ddm3u8-go
-          tar -C out -czf out/ddm3u8-go-${{ matrix.arch }}.tar.gz ddm3u8-go-${{ matrix.arch }}
-          ls -lh out/
+          go build -trimpath -ldflags="-s -w" -o out/ddm3u8-go ./cmd/ddm3u8-go
+          tar -czf ddm3u8-go-${{ matrix.arch }}.tar.gz -C out ddm3u8-go
 
-      - name: Upload binary artifact
+      - name: Build Web binary (${{ matrix.arch }})
+        env:
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm }}
+          CGO_ENABLED: 0
+        run: |
+          mkdir -p out
+          go build -trimpath -ldflags="-s -w" -o out/ddm3u8-web ./cmd/ddm3u8-web
+          tar -czf ddm3u8-web-${{ matrix.arch }}.tar.gz -C out ddm3u8-web
+
+      - name: Upload CLI binary
         uses: actions/upload-artifact@v4
         with:
           name: ddm3u8-go-${{ matrix.arch }}
-          path: out/ddm3u8-go-${{ matrix.arch }}.tar.gz
+          path: ddm3u8-go-${{ matrix.arch }}.tar.gz
           retention-days: 30
 
-  # ---------- 原始静态二进制（Web 版，含 embed 前端，可直接启动服务） ----------
-  binaries-web:
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: amd64
-            goarch: amd64
-            goarm: ""
-          - arch: arm64
-            goarch: arm64
-            goarm: ""
-          - arch: armv7l
-            goarch: arm
-            goarm: "7"
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.25'
-          cache: true
-
-      - name: Cross-compile Web (${{ matrix.arch }})
-        env:
-          CGO_ENABLED: 0
-          GOOS: linux
-          GOARCH: ${{ matrix.goarch }}
-          GOARM: ${{ matrix.goarm }}
-        run: |
-          mkdir -p out
-          go build -trimpath -ldflags="-s -w" -o out/ddm3u8-web-${{ matrix.arch }} ./cmd/ddm3u8-web
-          tar -C out -czf out/ddm3u8-web-${{ matrix.arch }}.tar.gz ddm3u8-web-${{ matrix.arch }}
-          ls -lh out/
-
-      - name: Upload binary artifact
+      - name: Upload Web binary
         uses: actions/upload-artifact@v4
         with:
           name: ddm3u8-web-${{ matrix.arch }}
-          path: out/ddm3u8-web-${{ matrix.arch }}.tar.gz
+          path: ddm3u8-web-${{ matrix.arch }}.tar.gz
           retention-days: 30
 
-  # ---------- Release：tag 时把 CLI/Web 二进制 + Docker tar 包都挂上 ----------
+  # ---------- Release（只在 tag 推送时触发） ----------
   release:
-    needs: [binaries-cli, binaries-web, tars]
+    needs: [single-arch, tars, binaries-cli]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     steps:
@@ -253,7 +183,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
-          pattern: ddm3u8-*-*
+          pattern: ddm3u8-*
           merge-multiple: true
 
       - name: List artifacts
@@ -263,55 +193,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           name: ${{ github.ref_name }}
+          generate_release_notes: true
           files: |
-            artifacts/ddm3u8-go-*.tar.gz
-            artifacts/ddm3u8-web-*.tar.gz
-            artifacts/ddm3u8-go-web-*.tar
-          body: |
-            Go + uTLS 下载器（${{ github.ref_name }}）
-
-            ## Docker 镜像 tar 包（推荐，docker load 加载，不依赖 pull 选架构）
-
-            下载对应架构的 tar 文件后：
-            ```bash
-            # 加载镜像（以 armv7l 为例）
-            docker load -i ddm3u8-go-web-armv7l.tar
-
-            # 运行
-            docker run -d \
-              --name ddm3u8 \
-              -p 8080:8080 \
-              -v $PWD/downloads:/downloads \
-              -e MAX_DOWNLOADS=3 \
-              -e WEB_USER=admin \
-              -e WEB_PASS=admin \
-              --restart unless-stopped \
-              ddm3u8:go-web-armv7l
-            ```
-
-            浏览器访问 `http://server-ip:8080/`，前端页面与原 Flask 版完全一致。
-
-            ## 在线拉取（新 docker 会自动选架构）
-
-            ```bash
-            docker pull ghcr.io/pelico/ddm3u8:go-web
-            ```
-
-            ## 原始静态二进制（无需 Docker）
-
-            ### Web 版（启动 HTTP 服务 + API + 前端页面）
-            ```bash
-            tar xzf ddm3u8-web-<arch>.tar.gz
-            chmod +x ddm3u8-web-<arch>
-            ./ddm3u8-web-<arch> -port 8080 -download-dir /downloads -max-downloads 3
-            ```
-
-            ### CLI 版（命令行单任务下载）
-            ```bash
-            tar xzf ddm3u8-go-<arch>.tar.gz
-            chmod +x ddm3u8-go-<arch>
-            ./ddm3u8-go-<arch> -url "https://example.com/index.m3u8" \
-              -referer "https://example.com" -save-dir . -save-name video
-            ```
-
-            合并需要 ffmpeg，armv7l 系统可 `apt install ffmpeg` 或加 `-no-merge` 仅保留分片。
+            artifacts/**/*.tar
+            artifacts/**/*.tar.gz
