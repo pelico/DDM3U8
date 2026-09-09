@@ -19,6 +19,12 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 
+# 单独拷贝 templates，并加 ARG 让这层在 CACHE_BUST 变化时强制失效
+# （避免 embed 进二进制的 index.html 是旧版，导致 Web 页面不更新）
+ARG CACHE_BUST=5
+COPY templates ./templates
+
+# 再拷其余源码
 COPY . .
 
 # Debug: 打印目标平台，方便排查 "Exec format error"
