@@ -31,7 +31,8 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+# GitHub Actions runner 在国外，用 PyPI 官方源最稳（清华源对国内加速，国外反而抖动）
+RUN pip install --no-cache-dir --retries 3 --timeout 60 -r requirements.txt
 
 # 只从 extractor 拿解压后的单个二进制，vendor tar 包不进最终镜像（省 ~16MB 层）
 COPY --from=extractor /tmp/N_m3u8DL-RE /app/N_m3u8DL-RE

@@ -9,7 +9,8 @@ WORKDIR /app
 RUN apk add --no-cache ffmpeg su-exec tini tzdata
 
 COPY requirements.armv7l.txt .
-RUN pip install --no-cache-dir -r requirements.armv7l.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+# GitHub Actions runner 在国外，用 PyPI 官方源最稳（清华源对国内加速，国外反而抖动）
+RUN pip install --no-cache-dir --retries 3 --timeout 60 -r requirements.armv7l.txt
 
 COPY templates ./templates
 COPY main.py .
