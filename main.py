@@ -532,10 +532,10 @@ def run_download(task_id, cmd):
                     tasks[task_id]['status'] = '合并中'
                     tasks[task_id]['log'] = '正在封装为MP4...'
                 else:
-                    err_tail = ' | '.join(l for l in recent_lines[-15:] if l)
+                    err_tail = ' | '.join(l for l in recent_lines[-30:] if l)
                     reason = f"进程退出码 {process.returncode}" if process.returncode != 0 else "假成功(未生成TS文件)"
                     tasks[task_id]['status'] = '错误'
-                    tasks[task_id]['log'] = f'❌ {reason}  末尾输出: {err_tail[:500]}'
+                    tasks[task_id]['log'] = f'❌ {reason} 末尾输出: {err_tail[:2000]}'
                     log_error(f"[调度器] 任务 [{task_name}] 失败: {reason}; 末尾输出: {err_tail}")
             else:
                 # N_m3u8DL-RE 直接输出 .mp4
@@ -545,10 +545,10 @@ def run_download(task_id, cmd):
                     tasks[task_id]['status'] = '已完成'
                     tasks[task_id]['log'] = '✅ 完整下载并合并成功'
                 else:
-                    err_tail = ' | '.join(l for l in recent_lines[-15:] if l)
+                    err_tail = ' | '.join(l for l in recent_lines[-30:] if l)
                     reason = f"进程退出码 {process.returncode}" if process.returncode != 0 else "假成功(未生成最终MP4)"
                     tasks[task_id]['status'] = '错误'
-                    tasks[task_id]['log'] = f'❌ {reason}  末尾输出: {err_tail[:500]}'
+                    tasks[task_id]['log'] = f'❌ {reason} 末尾输出: {err_tail[:2000]}'
                     log_error(f"[调度器] 任务 [{task_name}] 失败: {reason}; 末尾输出: {err_tail}")
 
         # yt-dlp 下载完成后，ffmpeg 将 .ts 封装为 .mp4（流复制，不重编码）

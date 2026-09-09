@@ -23,6 +23,9 @@ FROM python:3.11-slim
 
 ENV TZ=Asia/Shanghai
 ENV PYTHONUNBUFFERED=1
+# N_m3u8DL-RE 是 .NET 自包含程序，启动时 System.Globalization.TextInfo..cctor()
+# 需要 ICU 数据，slim 镜像不带 libicu 会 SIGABRT(-6)。用 invariant 模式跳过 ICU。
+ENV DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1
 
 WORKDIR /app
 
