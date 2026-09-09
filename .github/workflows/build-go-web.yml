@@ -64,8 +64,8 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           no-cache: true
-          cache-from: type=gha,scope=go-web-v2
-          cache-to: type=gha,scope=go-web-v2,mode=max
+          cache-from: type=gha,scope=go-web-v3
+          cache-to: type=gha,scope=go-web-v3,mode=max
 
   # ---------- 单架构专用 tag（给老 Docker 用，避免多架构 manifest 选错） ----------
   single-arch:
@@ -109,7 +109,7 @@ jobs:
           push: true
           tags: ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:go-web-${{ matrix.tag_suffix }}
           no-cache: true
-          cache-from: type=gha,scope=go-web-single-v2
+          cache-from: type=gha,scope=go-web-single-v3
 
   # ---------- Docker 镜像 tar 包（三架构，docker load 加载，不依赖 pull 选架构） ----------
   tars:
