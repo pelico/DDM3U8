@@ -213,8 +213,13 @@
                         </select>
                     </div>
                     <textarea class="input-full" name="custom_headers" rows="2" placeholder="选填：自定义请求头，每行一个，格式 Key:Value&#10;例如：&#10;Sec-Fetch-Site: cross-site&#10;Sec-Fetch-Mode: cors"></textarea>
-                    <p style="font-size: 12px; color: #6b7280; margin: 8px 0 0 0;">
-                        💡 提示：并发默认3避免触发风控，非限制资源可调到10；握手被RST时换TLS指纹重试。
+                    <p style="font-size: 12px; color: #6b7280; margin: 8px 0 0 0; line-height: 1.6;">
+                        💡 <b>提示：</b><br>
+                        • 并发默认3避免触发风控，非限制资源可调到10<br>
+                        • UA 和 TLS指纹要匹配：桌面Chrome UA 配 chrome 指纹，移动端 Edge/Chrome UA 也配 chrome，iOS Safari UA 配 safari，Firefox UA 配 firefox<br>
+                        • sec-ch-ua 系列会根据 UA 自动推导，无需手动填<br>
+                        • 握手被RST时：①换TLS指纹 ②补完整Cookie ③换出口IP<br>
+                        • 同站点Cookie可复用，换站点才需重新获取
                     </p>
                 </div>
                 <input type="text" class="input-full" name="sub_path" placeholder="选填：下载子目录（如 movie1）不填则存到根目录">
