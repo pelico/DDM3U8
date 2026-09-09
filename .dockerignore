@@ -1,0 +1,18 @@
+# 通用排除项，对 Dockerfile 和 Dockerfile.go 都安全
+.git
+.github
+__pycache__
+*.py[cod]
+*.pyo
+Logs/
+tasks_history.json
+*.log
+.env
+.venv/
+venv/
+tmp/
+temp/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

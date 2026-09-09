@@ -1,0 +1,153 @@
+name: Build Go Core (uTLS)
+
+on:
+  push:
+    branches: [go-core]
+    tags: ["go-v*.*.*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  IMAGE_NAME: ddm3u8
+
+jobs:
+  # ---------- 1. 多架构 Docker 镜像（buildx + Go 交叉编译，不走 QEMU） ----------
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=go-core
+            type=ref,event=tag
+            type=sha,prefix=go-sha-
+
+      - name: Build and push (multi-arch)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.go-core
+          platforms: linux/amd64,linux/arm64,linux/arm/v7
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ---------- 2. 原始静态二进制（直接在 armv7l 设备上跑，无需 Docker） ----------
+  binaries:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            goarch: amd64
+            goarm: ""
+          - arch: arm64
+            goarch: arm64
+            goarm: ""
+          - arch: armv7l
+            goarch: arm
+            goarm: "7"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Cross-compile (${{ matrix.arch }})
+        env:
+          CGO_ENABLED: 0
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm }}
+        run: |
+          mkdir -p out
+          go build -trimpath -ldflags="-s -w" -o out/ddm3u8-go-${{ matrix.arch }} ./cmd/ddm3u8-go
+          # 打包 ffmpeg 合并依赖说明 + 二进制
+          tar -C out -czf out/ddm3u8-go-${{ matrix.arch }}.tar.gz ddm3u8-go-${{ matrix.arch }}
+          ls -lh out/
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ddm3u8-go-${{ matrix.arch }}
+          path: out/ddm3u8-go-${{ matrix.arch }}.tar.gz
+          retention-days: 30
+
+  # ---------- 3. Release：把三架构二进制挂到 tag 上 ----------
+  release:
+    needs: binaries
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: ddm3u8-go-*
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -lhR artifacts/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          files: |
+            artifacts/ddm3u8-go-*.tar.gz
+          body: |
+            Go + uTLS 版下载器（${{ github.ref_name }}）
+
+            ## 使用
+            ```bash
+            # 解压
+            tar xzf ddm3u8-go-<arch>.tar.gz
+            chmod +x ddm3u8-go-<arch>
+
+            # 直接下载（带 Chrome TLS 指纹伪装）
+            ./ddm3u8-go-<arch> \
+              -url "https://example.com/index.m3u8" \
+              -referer "https://example.com" \
+              -save-dir . -save-name video
+
+            # armv7l 设备也可用，Go 静态交叉编译，无需 curl_cffi
+            ```
+
+            ## Docker 镜像
+            ```
+            docker pull ghcr.io/pelico/ddm3u8:go-core
+            docker run --rm -v "$PWD:/downloads" ghcr.io/pelico/ddm3u8:go-core \
+              -url "https://example.com/index.m3u8" -referer "https://example.com" \
+              -save-dir /downloads -save-name video
+            ```
+
+            合并需要 ffmpeg，armv7l 系统可 `apt install ffmpeg` 或加 `-no-merge` 仅保留分片。
