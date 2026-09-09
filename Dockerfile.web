@@ -4,12 +4,16 @@
 # 支持构建 linux/amd64、linux/arm64、linux/arm/v7 三架构。
 
 #--------- builder：始终在构建机原生架构跑，Go 交叉编译到目标架构 ---------
+# 注意：--platform=$BUILDPLATFORM 让 builder 在构建机原生架构跑（快，不走 QEMU）
+# 但 buildx 会把 TARGETARCH 设成 builder 实际跑的架构（即 BUILDARCH）
+# 所以要从 TARGETPLATFORM 解析真正的目标架构
 FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
 
+ARG TARGETPLATFORM=linux/amd64
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64
 ARG TARGETVARIANT
-ARG CACHE_BUST=1
+ARG CACHE_BUST=2
 
 WORKDIR /src
 
@@ -26,14 +30,18 @@ RUN echo "=== BUILD DEBUG ===" && \
 
 # 同时构建 CLI 版（ddm3u8-go）和 Web 版（ddm3u8-web）
 # CGO_ENABLED=0 → 静态二进制；GOARM 仅对 GOARCH=arm 生效（其它架构自动忽略）
-# 显式 export GOARM，确保 arm/v7 编译正确
-RUN case "$TARGETARCH" in \
-      arm) export GOARM=${TARGETVARIANT#v} ;; \
+# 关键：从 TARGETPLATFORM 解析真正的目标架构（buildx 在 --platform=$BUILDPLATFORM 时
+# 会把 TARGETARCH 设成 builder 实际跑的架构，不是 target 架构）
+RUN case "$TARGETPLATFORM" in \
+      linux/arm/v7) export GOARCH=arm GOARM=7 EXPECTED=2800 ;; \
+      linux/arm64)  export GOARCH=arm64 EXPECTED=b700 ;; \
+      linux/amd64)  export GOARCH=amd64 EXPECTED=3e00 ;; \
+      *) echo "ERROR: unknown TARGETPLATFORM=$TARGETPLATFORM" && exit 1 ;; \
     esac && \
-    echo "GOARM=$GOARM GOOS=$TARGETOS GOARCH=$TARGETARCH" && \
-    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+    echo "TARGETPLATFORM=$TARGETPLATFORM -> GOARCH=$GOARCH GOARM=$GOARM (expected ELF machine=$EXPECTED)" && \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$GOARCH \
     go build -trimpath -ldflags="-s -w" -o /out/ddm3u8-go ./cmd/ddm3u8-go && \
-    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$GOARCH \
     go build -trimpath -ldflags="-s -w" -o /out/ddm3u8-web ./cmd/ddm3u8-web
 
 # 验证二进制架构匹配目标架构（读 ELF header 的 machine 字段）
@@ -42,10 +50,10 @@ RUN echo "=== VERIFY BINARY ARCH ===" && \
     od -A x -t x1 -N 20 /out/ddm3u8-web && \
     MACHINE=$(od -A n -t x1 -j 18 -N 2 /out/ddm3u8-web | tr -d ' \n') && \
     echo "ELF machine bytes: $MACHINE" && \
-    case "$TARGETARCH" in \
-      arm) echo "$MACHINE" | grep -q "^2800$" && echo "OK: arm 32-bit" || (echo "FAIL: expected arm32 (2800), got $MACHINE" && exit 1) ;; \
-      arm64) echo "$MACHINE" | grep -q "^b700$" && echo "OK: aarch64" || (echo "FAIL: expected aarch64 (b700), got $MACHINE" && exit 1) ;; \
-      amd64) echo "$MACHINE" | grep -q "^3e00$" && echo "OK: x86_64" || (echo "FAIL: expected x86_64 (3e00), got $MACHINE" && exit 1) ;; \
+    case "$TARGETPLATFORM" in \
+      linux/arm/v7) [ "$MACHINE" = "2800" ] && echo "OK: arm 32-bit" || (echo "FAIL: expected arm32 (2800), got $MACHINE" && exit 1) ;; \
+      linux/arm64)  [ "$MACHINE" = "b700" ] && echo "OK: aarch64" || (echo "FAIL: expected aarch64 (b700), got $MACHINE" && exit 1) ;; \
+      linux/amd64)  [ "$MACHINE" = "3e00" ] && echo "OK: x86_64" || (echo "FAIL: expected x86_64 (3e00), got $MACHINE" && exit 1) ;; \
     esac
 
 #--------- runtime：alpine + ffmpeg + 静态二进制 ---------
