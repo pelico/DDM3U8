@@ -431,10 +431,17 @@ func (m *TaskManager) runMerge(t *Task) {
 
 // CreateLocalMerge 创建一个"本地缓存合并"任务（不重新下载，直接复用 tempDir 中已有的 .ts 分片）
 // folderPath 是已存在分片的临时目录绝对路径，folderName 用于输出文件名与展示
+// 命名规则：去掉 tempDir 名的 _temp 后缀，加 _merge，如 video_xxx_temp → video_xxx_merge.mp4
 func (m *TaskManager) CreateLocalMerge(folderPath, folderName string) string {
 	id := uuid.New().String()[:8]
-	ts := time.Now().Format("0102_150405")
-	fullName := fmt.Sprintf("local_%s_%s_%s", folderName, ts, id[:3])
+	// 简化命名：去掉 _temp 后缀加 _merge，避免过长
+	// 原 local_video_xxx_temp_yyy_zzz.mp4 → video_xxx_merge.mp4
+	base := strings.TrimSuffix(folderName, "_temp")
+	if base == folderName {
+		// 没有 _temp 后缀，原样用
+		base = folderName
+	}
+	fullName := base + "_merge"
 
 	cfg := downloader.DefaultConfig()
 	cfg.URL = "local://" + folderName // 占位，不参与下载
