@@ -104,8 +104,8 @@ jobs:
       - name: Upload tar artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${IMAGE_NAME}-go-web-${{ matrix.arch }}
-          path: ${IMAGE_NAME}-go-web-${{ matrix.arch }}.tar
+          name: ${{ env.IMAGE_NAME }}-go-web-${{ matrix.arch }}
+          path: ${{ env.IMAGE_NAME }}-go-web-${{ matrix.arch }}.tar
           retention-days: 30
 
   # ---------- 原始静态二进制（CLI 版，armv7l 可直接跑，无需 Docker） ----------
