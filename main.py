@@ -46,19 +46,41 @@ def detect_download_core():
         return "yt-dlp"
     return None
 
-def curl_cffi_available():
-    """检测 curl_cffi 是否可用（armv7l 无预编译 wheel，可能未安装）"""
+def yt_dlp_impersonate_available():
+    """
+    检测 yt-dlp --impersonate 是否真正可用。
+    仅 import curl_cffi 成功不够——还可能因底层 .so 加载失败
+    （如缺 libcurl-impersonate / musl 缺依赖）导致运行时报
+    'Impersonate target "chrome" is not available'。
+    实测 yt-dlp --list-impersonate-targets 的输出最可靠。
+    """
+    if not shutil.which("yt-dlp"):
+        return False
     try:
-        import curl_cffi  # noqa: F401
-        return True
-    except Exception:
+        r = subprocess.run(
+            ["yt-dlp", "--list-impersonate-targets"],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, timeout=10,
+        )
+        out = (r.stdout or "")
+        # 能列出 chrome / safari / edge 才算真可用；纯错误输出则 False
+        ok = r.returncode == 0 and any(
+            t in out for t in ("chrome", "safari", "edge")
+        )
+        if not ok:
+            logger.warning(f"[环境初始化] yt-dlp --impersonate 不可用: {out.strip()[:200]}")
+        return ok
+    except Exception as e:
+        logger.warning(f"[环境初始化] yt-dlp --impersonate 检测异常: {e}")
         return False
 
 DOWNLOAD_CORE = detect_download_core()
-# curl_cffi 缺失时 yt-dlp --impersonate chrome 会启动失败，需动态决定是否加该参数
-CURL_CFFI_OK = curl_cffi_available()
+# yt-dlp --impersonate chrome 依赖 curl_cffi 及其底层 .so 完整可用，
+# 光装 pip 包不够（典型如 musl/缺 libcurl-impersonate 场景会装包成功但运行失败）。
+# 用 yt-dlp --list-impersonate-targets 实测，避免误加 --impersonate 导致任务直接退出 1。
+CURL_CFFI_OK = yt_dlp_impersonate_available()
 if DOWNLOAD_CORE == "yt-dlp" and not CURL_CFFI_OK:
-    logger.warning("[环境初始化] curl_cffi 不可用，yt-dlp 将不带 --impersonate chrome，部分 CDN 可能连接被重置")
+    logger.warning("[环境初始化] yt-dlp --impersonate 不可用，将不带该参数，部分 CDN 可能 Connection reset")
 
 # 读取鉴权环境变量
 WEB_USER = os.environ.get("WEB_USER", "").strip()
