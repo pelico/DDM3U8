@@ -52,9 +52,12 @@ def yt_dlp_impersonate_available():
             text=True, timeout=10,
         )
         out = (r.stdout or "")
+        # yt-dlp --list-impersonate-targets 输出 "Chrome-xxx"（首字母大写），
+        # Python 的 in 区分大小写，必须 lower() 后匹配，否则永远 False
+        out_lower = out.lower()
         # 能列出 chrome / safari / edge 才算真可用；纯错误输出则 False
         ok = r.returncode == 0 and any(
-            t in out for t in ("chrome", "safari", "edge")
+            t in out_lower for t in ("chrome", "safari", "edge")
         )
         if not ok:
             logger.warning(f"[环境初始化] yt-dlp --impersonate 不可用: {out.strip()[:200]}")
