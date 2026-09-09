@@ -173,10 +173,24 @@ func (m *TaskManager) runTask(t *Task) {
 	t.Status = StatusDownload
 	t.startedAt = time.Now()
 	t.dl = downloader.New(t.cfg, func(format string, v ...interface{}) {
-		// 把关键日志写入 t.Log（最近一条）
+		// 关键日志写入 t.Log，但对 "seg N ok" 这类高频日志做摘要
+		msg := fmt.Sprintf(format, v...)
 		m.mu.Lock()
-		t.Log = fmt.Sprintf(format, v...)
-		m.mu.Unlock()
+		defer m.mu.Unlock()
+		// "seg N ok" 这种进度日志：显示成 "已完成 N/Total (失败 F)"
+		if strings.HasPrefix(msg, "seg ") && strings.HasSuffix(msg, " ok") {
+			p := t.dl.Progress()
+			if p.Total > 0 {
+				t.Log = fmt.Sprintf("下载中: %d/%d (失败 %d, %.0f%%)",
+					p.Done, p.Total, p.Failed,
+					float64(p.Done)/float64(p.Total)*100)
+			} else {
+				t.Log = fmt.Sprintf("下载中: 已完成 %d (失败 %d)", p.Done, p.Failed)
+			}
+			return
+		}
+		// 其他日志（拉取 m3u8、合并、错误等）直接覆盖
+		t.Log = msg
 	})
 	m.mu.Unlock()
 

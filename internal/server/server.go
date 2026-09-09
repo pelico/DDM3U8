@@ -204,7 +204,7 @@ func (s *Server) taskActionHandler(w http.ResponseWriter, r *http.Request) {
 		var body struct{ Action string `json:"action"` }
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		switch body.Action {
-		case "cancel":
+		case "cancel", "pause": // 前端按钮可能传 pause，统一当取消处理
 			if s.tm.Cancel(id) {
 				w.WriteHeader(http.StatusOK)
 			} else {
