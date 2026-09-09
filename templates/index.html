@@ -195,10 +195,20 @@
                 <input type="text" class="input-full" name="referer" value="https://" placeholder="选填：全局 Referer">
                 <div style="margin: 10px 0;">
                     <button type="button" id="toggleAdvanced" class="btn btn-ghost" style="width: 100%; font-size: 13px;">
-                        ⚙️ 高级选项（UA / 指纹 / 并发 / 自定义头）
+                        ⚙️ 收起高级选项
                     </button>
                 </div>
-                <div id="advancedOptions" style="display: none; margin-bottom: 10px;">
+                <div id="advancedOptions" style="display: block; margin-bottom: 10px;">
+                    <div class="input-group" style="margin-bottom: 8px; gap: 10px; align-items: center;">
+                        <label style="font-size: 13px; color: #4b5563; white-space: nowrap;">📋 快速预设：</label>
+                        <select id="presetSelect" style="padding: 8px; border: 1px solid var(--border); border-radius: 8px; flex: 1;">
+                            <option value="">— 选择站点预设（自动填 UA/Origin/Referer/指纹）—</option>
+                            <option value="missav_android_edge">missav 站点（移动 Edge UA）</option>
+                            <option value="missav_win_chrome">missav 站点（桌面 Chrome UA）</option>
+                            <option value="missav_ios_safari">missav 站点（iOS Safari UA）</option>
+                            <option value="generic_cdn">通用 CDN（无 Referer，纯分片直连）</option>
+                        </select>
+                    </div>
                     <input type="text" class="input-full" name="user_agent" placeholder="选填：User-Agent（留空使用默认浏览器UA）" style="margin-bottom: 8px;">
                     <input type="text" class="input-full" name="origin" placeholder="选填：Origin" style="margin-bottom: 8px;">
                     <textarea class="input-full" name="cookie" rows="2" placeholder="选填：Cookie（可直接整段粘贴，自动清洗）&#10;支持任意格式：&#10;cf_clearance=xxx; _cf_bm=yyy&#10;或带前缀 Cookie: cf_clearance=...; Path=/; HttpOnly 等" style="margin-bottom: 8px;"></textarea>
@@ -428,7 +438,7 @@
             }
         };
 
-        // 一键清除：重置所有表单字段（含高级选项）
+        // 一键清除：重置所有表单字段（含高级选项 + 预设下拉）
         document.getElementById('clearFormBtn').onclick = function() {
             const form = document.getElementById('downForm');
             form.reset();
@@ -437,6 +447,7 @@
             form.elements['referer'].value = 'https://';
             form.elements['concurrency'].value = '3';
             form.elements['fingerprint'].value = 'chrome';
+            document.getElementById('presetSelect').value = '';
             showToast('表单已清空');
         };
 
@@ -448,6 +459,46 @@
             this.textContent = shown
                 ? '⚙️ 高级选项（UA / 指纹 / 并发 / 自定义头）'
                 : '⚙️ 收起高级选项';
+        };
+
+        // 站点快速预设：选了就自动填 UA/Origin/Referer/TLS指纹
+        // Cookie 仍需手动粘贴（每个视频的 cf_clearance 不一样，但同站点可复用）
+        const PRESETS = {
+            missav_android_edge: {
+                ua: 'Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36 Edg/140.0.0.0',
+                origin: 'https://missav.mrst.one',
+                referer: 'https://missav.mrst.one',
+                fingerprint: 'chrome',
+            },
+            missav_win_chrome: {
+                ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
+                origin: 'https://missav.mrst.one',
+                referer: 'https://missav.mrst.one',
+                fingerprint: 'chrome',
+            },
+            missav_ios_safari: {
+                ua: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1',
+                origin: 'https://missav.mrst.one',
+                referer: 'https://missav.mrst.one',
+                fingerprint: 'safari',
+            },
+            generic_cdn: {
+                ua: '',
+                origin: '',
+                referer: '',
+                fingerprint: 'chrome',
+            },
+        };
+        document.getElementById('presetSelect').onchange = function() {
+            const p = PRESETS[this.value];
+            if (!p) return;
+            const form = document.getElementById('downForm');
+            form.elements['user_agent'].value = p.ua;
+            form.elements['origin'].value = p.origin;
+            form.elements['referer'].value = p.referer || 'https://';
+            form.elements['fingerprint'].value = p.fingerprint;
+            // 预设不覆盖 Cookie（用户可能已填），只填空字段时才填
+            showToast('预设已填入 UA/Origin/Referer/指纹，请补 Cookie');
         };
 
         document.getElementById('localMergeForm').onsubmit = async function(e) {
