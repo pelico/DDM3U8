@@ -9,6 +9,7 @@ import (
 	"crypto/cipher"
 	"fmt"
 	"io"
+	"math/rand"
 	"net"
 	"net/http"
 	"net/url"
@@ -418,11 +419,36 @@ func (d *Downloader) setHeaders(req *http.Request) {
 			req.Header.Set("Origin", fmt.Sprintf("%s://%s", u.Scheme, u.Host))
 		}
 	}
+	// 浏览器标准头（真实浏览器访问视频时会发送这些）
+	// 让请求头更自洽，降低被 CDN bot 检测识别的概率
+	if req.Header.Get("Accept") == "" {
+		req.Header.Set("Accept", "*/*")
+	}
+	if req.Header.Get("Accept-Language") == "" {
+		req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+	}
+	if req.Header.Get("Sec-Fetch-Site") == "" {
+		req.Header.Set("Sec-Fetch-Site", "cross-site")
+	}
+	if req.Header.Get("Sec-Fetch-Mode") == "" {
+		req.Header.Set("Sec-Fetch-Mode", "cors")
+	}
+	if req.Header.Get("Sec-Fetch-Dest") == "" {
+		req.Header.Set("Sec-Fetch-Dest", "empty")
+	}
+	if req.Header.Get("sec-ch-ua") == "" {
+		req.Header.Set("sec-ch-ua", `"Not.A/Brand";v="8", "Chromium";v="126", "Google Chrome";v="126"`)
+	}
+	if req.Header.Get("sec-ch-ua-mobile") == "" {
+		req.Header.Set("sec-ch-ua-mobile", "?0")
+	}
+	if req.Header.Get("sec-ch-ua-platform") == "" {
+		req.Header.Set("sec-ch-ua-platform", `"Windows"`)
+	}
+	// 用户自定义头会覆盖上面的默认值（放在最后赋值）
 	for k, v := range d.cfg.Headers {
 		req.Header.Set(k, v)
 	}
-	req.Header.Set("Accept", "*/*")
-	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
 }
 
 // doWithRetry 执行请求并按可重试错误退避重试
@@ -536,6 +562,15 @@ func (d *Downloader) downloadSegments(ctx context.Context, p *m3u8.Playlist, key
 // downloadFile 下载单个分片到文件
 // IV 计算：fixedIV 非空则用 fixedIV；否则用 segIndex 作为 16 字节 IV 的低 8 字节（big-endian）。
 func (d *Downloader) downloadFile(ctx context.Context, segURL, outPath string, br *m3u8.ByteRange, key, fixedIV []byte, segIndex int) error {
+	// 请求间隔随机化：0-300ms 随机抖动，避免固定间隔批量请求
+	// 真实浏览器请求分片间隔不固定，CDN bot 检测会看请求时序模式
+	if jitter := time.Duration(rand.Intn(300)) * time.Millisecond; jitter > 0 {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(jitter):
+		}
+	}
 	req, err := http.NewRequestWithContext(ctx, "GET", segURL, nil)
 	if err != nil {
 		return err
