@@ -46,7 +46,19 @@ def detect_download_core():
         return "yt-dlp"
     return None
 
+def curl_cffi_available():
+    """检测 curl_cffi 是否可用（armv7l 无预编译 wheel，可能未安装）"""
+    try:
+        import curl_cffi  # noqa: F401
+        return True
+    except Exception:
+        return False
+
 DOWNLOAD_CORE = detect_download_core()
+# curl_cffi 缺失时 yt-dlp --impersonate chrome 会启动失败，需动态决定是否加该参数
+CURL_CFFI_OK = curl_cffi_available()
+if DOWNLOAD_CORE == "yt-dlp" and not CURL_CFFI_OK:
+    logger.warning("[环境初始化] curl_cffi 不可用，yt-dlp 将不带 --impersonate chrome，部分 CDN 可能连接被重置")
 
 # 读取鉴权环境变量
 WEB_USER = os.environ.get("WEB_USER", "").strip()
@@ -520,10 +532,10 @@ def run_download(task_id, cmd):
                     tasks[task_id]['status'] = '合并中'
                     tasks[task_id]['log'] = '正在封装为MP4...'
                 else:
-                    err_tail = ' | '.join(l for l in recent_lines[-6:] if l)
+                    err_tail = ' | '.join(l for l in recent_lines[-15:] if l)
                     reason = f"进程退出码 {process.returncode}" if process.returncode != 0 else "假成功(未生成TS文件)"
                     tasks[task_id]['status'] = '错误'
-                    tasks[task_id]['log'] = f'❌ {reason}  末尾输出: {err_tail[:300]}'
+                    tasks[task_id]['log'] = f'❌ {reason}  末尾输出: {err_tail[:500]}'
                     log_error(f"[调度器] 任务 [{task_name}] 失败: {reason}; 末尾输出: {err_tail}")
             else:
                 # N_m3u8DL-RE 直接输出 .mp4
@@ -533,10 +545,10 @@ def run_download(task_id, cmd):
                     tasks[task_id]['status'] = '已完成'
                     tasks[task_id]['log'] = '✅ 完整下载并合并成功'
                 else:
-                    err_tail = ' | '.join(l for l in recent_lines[-6:] if l)
+                    err_tail = ' | '.join(l for l in recent_lines[-15:] if l)
                     reason = f"进程退出码 {process.returncode}" if process.returncode != 0 else "假成功(未生成最终MP4)"
                     tasks[task_id]['status'] = '错误'
-                    tasks[task_id]['log'] = f'❌ {reason}  末尾输出: {err_tail[:300]}'
+                    tasks[task_id]['log'] = f'❌ {reason}  末尾输出: {err_tail[:500]}'
                     log_error(f"[调度器] 任务 [{task_name}] 失败: {reason}; 末尾输出: {err_tail}")
 
         # yt-dlp 下载完成后，ffmpeg 将 .ts 封装为 .mp4（流复制，不重编码）
@@ -988,7 +1000,6 @@ def start_task(url, name, task_id, download_dir=None, headers=None, core=None):
             "-o", temp_ts,
             "--concurrent-fragments", "10",
             "--hls-prefer-native",
-            "--impersonate", "chrome",
             "--no-part",
             "--no-mtime",
             "--fixup", "never",
@@ -997,6 +1008,9 @@ def start_task(url, name, task_id, download_dir=None, headers=None, core=None):
             "--retry-sleep", "fragment:exp=1:60",
             "--user-agent", ua,
         ]
+        # curl_cffi 缺失时（如 armv7l 无预编译 wheel）跳过，避免 yt-dlp 启动报错
+        if CURL_CFFI_OK:
+            cmd.extend(["--impersonate", "chrome"])
         if headers.get("Referer"):
             cmd.extend(["--add-header", f"Referer:{headers['Referer']}"])
         if headers.get("Origin"):

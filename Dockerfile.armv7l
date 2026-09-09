@@ -9,8 +9,8 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends ffmpeg gosu tzdata && \
     rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+COPY requirements.armv7l.txt .
+RUN pip install --no-cache-dir -r requirements.armv7l.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 COPY templates ./templates
 COPY main.py .
