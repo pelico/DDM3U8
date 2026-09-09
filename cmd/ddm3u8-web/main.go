@@ -23,6 +23,8 @@ func main() {
 	fingerprint := flag.String("fingerprint", "chrome", "TLS 指纹: chrome/safari/firefox")
 	webUser := flag.String("web-user", envDefault("WEB_USER", ""), "Basic Auth 用户名")
 	webPass := flag.String("web-pass", envDefault("WEB_PASS", ""), "Basic Auth 密码")
+	// 任务历史持久化路径，对齐 armv7l 的 tasks_history.json
+	dbPath := flag.String("db-path", envDefault("DB_PATH", "/downloads/tasks_history.json"), "任务历史 JSON 持久化路径")
 	flag.Parse()
 
 	// 确保下载目录存在
@@ -33,6 +35,7 @@ func main() {
 	log.Printf("=== DDM3U8 服务启动 ===")
 	log.Printf("[启动] 配置: 端口=%s, 并发=%d, 下载目录=%s, 指纹=%s",
 		*port, *maxParallel, *downloadDir, *fingerprint)
+	log.Printf("[启动] 任务历史: %s", *dbPath)
 	log.Printf("调度器已启动，最大并发下载数: %d", *maxParallel)
 
 	srv := server.New(server.Config{
@@ -44,6 +47,7 @@ func main() {
 		MaxParallel:  *maxParallel,
 		WebUser:      *webUser,
 		WebPass:      *webPass,
+		DBPath:       *dbPath,
 		TemplatesFS:  templatesFS,
 	})
 	log.Fatal(srv.ListenAndServe())

@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -29,6 +30,8 @@ type Config struct {
 	MaxParallel  int
 	WebUser      string
 	WebPass      string
+	// DBPath 任务历史持久化路径（JSON 文件），空则不持久化
+	DBPath       string
 	// TemplatesFS 前端静态资源（embed 进二进制）
 	TemplatesFS  embed.FS
 }
@@ -37,8 +40,14 @@ type Config struct {
 func New(cfg Config) *Server {
 	tm := NewTaskManager(
 		cfg.MaxParallel, cfg.DownloadDir, cfg.TempBaseDir,
-		cfg.FFmpegPath, cfg.Fingerprint,
+		cfg.FFmpegPath, cfg.Fingerprint, cfg.DBPath,
 	)
+	// 启动时加载任务历史：活跃状态降为"已中断"，非活跃保留
+	tm.LoadTasks()
+	// 清理无任务对应的孤儿 _temp 目录
+	if n := tm.CleanupOrphanTempDirs(); n > 0 {
+		log.Printf("[启动清理] 清理了 %d 个残留临时目录", n)
+	}
 	s := &Server{tm: tm, cfg: cfg, mux: http.NewServeMux()}
 	s.routes()
 	return s
@@ -61,6 +70,9 @@ func (s *Server) routes() {
 
 	// 创建下载任务（与 Flask /down 完全兼容）
 	s.mux.HandleFunc("/down", s.withAuth(s.downHandler))
+
+	// 本地缓存合并（复用 /downloads 下的 .ts 分片，不重新下载）
+	s.mux.HandleFunc("/local_merge", s.withAuth(s.localMergeHandler))
 
 	// 健康检查
 	s.mux.HandleFunc("/health", s.healthHandler)
@@ -204,7 +216,13 @@ func (s *Server) taskActionHandler(w http.ResponseWriter, r *http.Request) {
 		var body struct{ Action string `json:"action"` }
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		switch body.Action {
-		case "cancel", "pause": // 前端按钮可能传 pause，统一当取消处理
+		case "pause": // 暂停：保留缓存，可断点恢复
+			if s.tm.Pause(id) {
+				w.WriteHeader(http.StatusOK)
+			} else {
+				http.Error(w, "cannot pause", http.StatusBadRequest)
+			}
+		case "cancel": // 取消：清理缓存
 			if s.tm.Cancel(id) {
 				w.WriteHeader(http.StatusOK)
 			} else {
@@ -371,6 +389,42 @@ func (s *Server) downHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// localMergeHandler POST /local_merge {folder_name}
+// 扫描 /downloads/{folder_name} 下的 .ts 分片，创建一个"本地缓存合并"任务
+// 复用已有分片，不重新下载。用于下载中断/失败后用残留的 .ts 缓存重新合并。
+func (s *Server) localMergeHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "表单解析失败"})
+		return
+	}
+	folderName := strings.TrimSpace(r.FormValue("folder_name"))
+	if folderName == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请先选择缓存文件夹"})
+		return
+	}
+	// 安全解析子路径（防目录遍历）
+	folderPath, ok := safeSubPath(s.cfg.DownloadDir, folderName)
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "非法的文件夹路径"})
+		return
+	}
+	info, err := os.Stat(folderPath)
+	if err != nil || !info.IsDir() {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "文件夹不存在: " + folderName})
+		return
+	}
+	// 用文件夹最后一段作为输出文件名
+	id := s.tm.CreateLocalMerge(folderPath, filepathBase(folderName))
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"message": "已创建本地合并任务",
+		"id":      id,
+	})
+}
+
 // ============= 工具函数 =============
 
 // writeJSON 写 JSON 响应
@@ -393,6 +447,40 @@ func filepathBase(p string) string {
 		return ""
 	}
 	return last
+}
+
+// safeSubPath 把用户传入的子路径解析为相对 rootDir 的安全绝对路径
+// 允许多层（如 "movie1/sub"），但禁止任何 .. 逃逸和绝对路径
+// 返回 (绝对路径, ok)；不安全则 ok=false
+func safeSubPath(rootDir, sub string) (string, bool) {
+	sub = strings.TrimSpace(sub)
+	sub = strings.Trim(sub, "/\\")
+	if sub == "" || sub == "." || sub == ".." {
+		return "", false
+	}
+	// 逐段过滤，剔除 . / .. / 空段
+	parts := strings.Split(sub, "/")
+	clean := make([]string, 0, len(parts))
+	for _, seg := range parts {
+		seg = strings.TrimSpace(seg)
+		if seg == "" || seg == "." || seg == ".." {
+			continue
+		}
+		if strings.ContainsAny(seg, `<>:"|?*`) {
+			return "", false
+		}
+		clean = append(clean, seg)
+	}
+	if len(clean) == 0 {
+		return "", false
+	}
+	joined := filepath.Clean(filepath.Join(rootDir, strings.Join(clean, "/")))
+	root := filepath.Clean(rootDir)
+	// 必须严格位于 rootDir 之下（不允许 == root）
+	if joined == root || !strings.HasPrefix(joined, root+string(filepath.Separator)) {
+		return "", false
+	}
+	return joined, true
 }
 
 // extractM3U8URLs 从文本中提取所有 m3u8 链接（按行/空格分隔）

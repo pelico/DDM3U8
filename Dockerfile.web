@@ -62,6 +62,8 @@ ENV MAX_DOWNLOADS=3
 ENV DOWNLOAD_DIR=/downloads
 ENV FFMPEG_PATH=ffmpeg
 ENV FINGERPRINT=chrome
+# 任务历史持久化路径（对齐 armv7l 的 tasks_history.json，放 /downloads 卷里，重启不丢）
+ENV DB_PATH=/downloads/tasks_history.json
 # WEB_USER / WEB_PASS 留空则不启用鉴权
 ENV WEB_USER=
 ENV WEB_PASS=
@@ -81,12 +83,14 @@ RUN printf '%s\n' '#!/bin/sh' \
     'mkdir -p "$DOWNLOAD_DIR"' \
     'echo "=== DDM3U8 (go-core) Web 服务启动 ==="' \
     'echo "[启动] 端口=$PORT, 并发=$MAX_DOWNLOADS, 下载目录=$DOWNLOAD_DIR, 指纹=$FINGERPRINT"' \
+    'echo "[启动] 任务历史: $DB_PATH"' \
     'exec /sbin/tini -- /usr/local/bin/ddm3u8-web \' \
     '  -port "$PORT" \' \
     '  -download-dir "$DOWNLOAD_DIR" \' \
     '  -max-downloads "$MAX_DOWNLOADS" \' \
     '  -ffmpeg "$FFMPEG_PATH" \' \
     '  -fingerprint "$FINGERPRINT" \' \
+    '  -db-path "$DB_PATH" \' \
     '  -web-user "$WEB_USER" \' \
     '  -web-pass "$WEB_PASS"' \
     > /entrypoint.sh && \

@@ -410,14 +410,21 @@ func (d *Downloader) setHeaders(req *http.Request) {
 }
 
 // doWithRetry 执行请求并按可重试错误退避重试
+// 注意：退避等待用 select 监听 ctx.Done()，确保用户暂停/取消任务时
+// 能立刻跳出 retry 循环，而不是继续把剩余次数重试完。
 func (d *Downloader) doWithRetry(req *http.Request) (io.ReadCloser, error) {
 	var lastErr error
 	backoff := d.cfg.RetryBackoff
 	if backoff == 0 {
 		backoff = time.Second
 	}
+	ctx := req.Context()
 	for i := 0; i < d.cfg.RetryMax; i++ {
-		resp, err := d.httpc.Do(req.Clone(req.Context()))
+		// 循环开头先检查 ctx，已被取消则立即退出，不再发起请求
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		resp, err := d.httpc.Do(req.Clone(ctx))
 		if err == nil {
 			if resp.StatusCode >= 200 && resp.StatusCode < 400 {
 				return resp.Body, nil
@@ -429,9 +436,18 @@ func (d *Downloader) doWithRetry(req *http.Request) (io.ReadCloser, error) {
 			}
 		} else {
 			lastErr = err
+			// 请求失败若因 ctx 取消（用户暂停/取消），不再重试
+			if ctx.Err() != nil {
+				return nil, err
+			}
 			d.logger("retry %d/%d error: %v", i+1, d.cfg.RetryMax, err)
 		}
-		time.Sleep(backoff)
+		// 退避等待，可被 ctx 取消打断（替代 time.Sleep）
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(backoff):
+		}
 		backoff *= 2
 		if backoff > 60*time.Second {
 			backoff = 60 * time.Second
@@ -486,11 +502,14 @@ func (d *Downloader) downloadSegments(ctx context.Context, p *m3u8.Playlist, key
 				d.progress.Note = fmt.Sprintf("seg %d 失败: %v", seg.Index, err)
 				d.progressMu.Unlock()
 			} else {
-				d.logger("seg %d ok", seg.Index)
+				// 先更新进度，再通过 logger 把快照传给上层（避免上层再 RLock progressMu 读）
 				d.progressMu.Lock()
 				d.progress.Done++
 				d.progress.Current = seg.Index
+				snap := d.progress
 				d.progressMu.Unlock()
+				// 用 "progress done/total/failed" 格式，上层据此前缀做节流展示
+				d.logger("progress %d/%d/%d", snap.Done, snap.Total, snap.Failed)
 			}
 		}()
 	}

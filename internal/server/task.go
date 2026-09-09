@@ -3,11 +3,13 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -23,6 +25,7 @@ const (
 	StatusDone     = "已完成"
 	StatusFailed   = "失败"
 	StatusCanceled = "已取消"
+	StatusPaused   = "已暂停"
 )
 
 // Task 单个下载任务
@@ -55,10 +58,11 @@ type TaskManager struct {
 	tempBaseDir string
 	ffmpegPath  string
 	fingerprint string
+	dbPath      string // 任务历史持久化路径（空则不持久化）
 }
 
 // NewTaskManager 创建任务管理器
-func NewTaskManager(maxParallel int, downloadDir, tempBaseDir, ffmpegPath, fingerprint string) *TaskManager {
+func NewTaskManager(maxParallel int, downloadDir, tempBaseDir, ffmpegPath, fingerprint, dbPath string) *TaskManager {
 	if maxParallel < 1 {
 		maxParallel = 1
 	}
@@ -69,6 +73,7 @@ func NewTaskManager(maxParallel int, downloadDir, tempBaseDir, ffmpegPath, finge
 		tempBaseDir: tempBaseDir,
 		ffmpegPath:  ffmpegPath,
 		fingerprint: fingerprint,
+		dbPath:      dbPath,
 	}
 }
 
@@ -113,7 +118,7 @@ func (m *TaskManager) CreateWithDir(url, name string, headers map[string]string,
 	m.order = append([]string{id}, m.order...)
 	m.mu.Unlock()
 
-	// 触发调度
+	m.saveTasks() // 持久化：新建任务即落盘
 	go m.schedule()
 
 	return id
@@ -167,6 +172,8 @@ func (m *TaskManager) schedule() {
 // runTask 在 goroutine 中执行单个任务
 func (m *TaskManager) runTask(t *Task) {
 	ctx, cancel := context.WithCancel(context.Background())
+	// 进度日志节流时间戳（原子读写，避免每个分片都抢 m.mu）
+	var lastProgressNanos int64
 
 	m.mu.Lock()
 	t.cancel = cancel
@@ -176,23 +183,35 @@ func (m *TaskManager) runTask(t *Task) {
 	t.Log = fmt.Sprintf("[调度器] 任务开始: URL=%s 输出=%s 指纹=%s 并发=%d 临时目录=%s",
 		t.cfg.URL, t.cfg.Output, t.cfg.Fingerprint, t.cfg.Concurrency, t.cfg.TempDir)
 	t.dl = downloader.New(t.cfg, func(format string, v ...interface{}) {
-		// 关键日志写入 t.Log，但对 "seg N ok" 这类高频日志做摘要
 		msg := fmt.Sprintf(format, v...)
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		// "seg N ok" 这种进度日志：显示成 "已完成 N/Total (失败 F)"
-		if strings.HasPrefix(msg, "seg ") && strings.HasSuffix(msg, " ok") {
-			p := t.dl.Progress()
-			if p.Total > 0 {
+		// "progress done/total/failed" 是高频进度日志，原子节流避免每个分片都抢 m.mu：
+		// 1000 分片 × 10 并发原本要 3000 次锁（m.mu + progressMu.RLock），
+		// 节流后只在 500ms 间隔才抢一次 m.mu，CPU 大幅下降。
+		if strings.HasPrefix(msg, "progress ") {
+			now := time.Now().UnixNano()
+			last := atomic.LoadInt64(&lastProgressNanos)
+			if now-last < int64(500*time.Millisecond) {
+				return // 节流命中，不抢任何锁
+			}
+			// CAS 抢刷新权，避免多个 goroutine 同时写 t.Log
+			if !atomic.CompareAndSwapInt64(&lastProgressNanos, last, now) {
+				return
+			}
+			var done, total, failed int
+			_, _ = fmt.Sscanf(msg, "progress %d/%d/%d", &done, &total, &failed)
+			m.mu.Lock()
+			defer m.mu.Unlock()
+			if total > 0 {
 				t.Log = fmt.Sprintf("下载中: %d/%d (失败 %d, %.0f%%)",
-					p.Done, p.Total, p.Failed,
-					float64(p.Done)/float64(p.Total)*100)
+					done, total, failed, float64(done)/float64(total)*100)
 			} else {
-				t.Log = fmt.Sprintf("下载中: 已完成 %d (失败 %d)", p.Done, p.Failed)
+				t.Log = fmt.Sprintf("下载中: 已完成 %d (失败 %d)", done, failed)
 			}
 			return
 		}
-		// 其他日志（拉取 m3u8、合并、错误等）直接覆盖
+		// 其他日志（拉取 m3u8、合并、错误、seg 失败等低频）直接覆盖
+		m.mu.Lock()
+		defer m.mu.Unlock()
 		t.Log = msg
 	})
 	m.mu.Unlock()
@@ -200,19 +219,28 @@ func (m *TaskManager) runTask(t *Task) {
 	// 执行下载
 	result, err := t.dl.Run(ctx)
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	t.cancel = nil
 	t.dl = nil
 
 	if err != nil {
 		t.Status = StatusFailed
 		t.Log = fmt.Sprintf("❌ %v  末尾输出: %s", err, lastNote(t.dl))
+		m.mu.Unlock()
+		// 失败时保留 temp_dir，方便点"强合"复用已下载分片
+		m.saveTasks() // 持久化：状态变更
 		return
 	}
 	t.Status = StatusDone
 	t.OutputFile = result.OutputFile
 	t.Log = fmt.Sprintf("✅ 完成: %s (%d 分片, 失败 %d, 耗时 %s)",
 		result.OutputFile, result.Segments, result.Failed, result.Duration.Truncate(time.Millisecond))
+	tempDir := t.cfg.TempDir
+	m.mu.Unlock()
+	// 下载+合并均成功后清理 temp_dir（对齐 armv7l）
+	if tempDir != "" {
+		_ = os.RemoveAll(tempDir)
+	}
+	m.saveTasks() // 持久化：完成
 }
 
 // lastNote 返回下载器最近一条进度备注
@@ -227,26 +255,66 @@ func lastNote(d *downloader.Downloader) string {
 	return fmt.Sprintf("status=%s, total=%d, done=%d, failed=%d", p.Status, p.Total, p.Done, p.Failed)
 }
 
-// Cancel 取消任务（仅下载中/排队中）
-func (m *TaskManager) Cancel(id string) bool {
+// removeTempDir 删除任务的临时分片目录（幂等，目录不存在不报错）
+// 对齐 armv7l：取消/删除/清理/完成/强合成功时都要清理缓存
+func removeTempDir(t *Task) {
+	if t == nil || t.cfg.TempDir == "" {
+		return
+	}
+	_ = os.RemoveAll(t.cfg.TempDir)
+}
+
+// Pause 暂停任务：取消正在执行的下载 context，但保留 temp_dir 与已下载分片，
+// 之后可点"恢复"断点续传。状态置为"已暂停"，对齐 armv7l 的 pause 语义。
+func (m *TaskManager) Pause(id string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	t, ok := m.tasks[id]
 	if !ok {
 		return false
 	}
+	// 仅活跃任务可暂停
 	if t.Status != StatusDownload && t.Status != StatusQueued && t.Status != StatusMerge {
 		return false
 	}
 	if t.cancel != nil {
 		t.cancel()
 	}
-	t.Status = StatusCanceled
-	t.Log = "已取消"
+	t.Status = StatusPaused
+	t.Log = "已暂停，保留缓存可恢复"
+	m.saveTasks() // 持久化
 	return true
 }
 
-// Resume 恢复任务：重新入队（用于失败/取消后重启）
+// Cancel 取消任务（仅下载中/排队中/合并中），并清理 temp_dir
+func (m *TaskManager) Cancel(id string) bool {
+	m.mu.Lock()
+	t, ok := m.tasks[id]
+	if !ok {
+		m.mu.Unlock()
+		return false
+	}
+	if t.Status != StatusDownload && t.Status != StatusQueued && t.Status != StatusMerge {
+		m.mu.Unlock()
+		return false
+	}
+	if t.cancel != nil {
+		t.cancel()
+	}
+	t.Status = StatusCanceled
+	t.Log = "任务已取消"
+	tempDir := t.cfg.TempDir
+	m.mu.Unlock()
+	// 在锁外做磁盘 IO
+	if tempDir != "" {
+		_ = os.RemoveAll(tempDir)
+	}
+	m.saveTasks() // 持久化
+	return true
+}
+
+// Resume 恢复任务：重新入队（用于失败/取消/暂停后重启）
+// 对齐 armv7l：已暂停也允许恢复，且 downloader 会跳过已存在的分片实现断点续传
 func (m *TaskManager) Resume(id string) bool {
 	m.mu.Lock()
 	t, ok := m.tasks[id]
@@ -254,7 +322,7 @@ func (m *TaskManager) Resume(id string) bool {
 		m.mu.Unlock()
 		return false
 	}
-	if t.Status != StatusFailed && t.Status != StatusCanceled && t.Status != StatusDone {
+	if t.Status != StatusFailed && t.Status != StatusCanceled && t.Status != StatusPaused && t.Status != StatusDone {
 		m.mu.Unlock()
 		return false
 	}
@@ -263,6 +331,7 @@ func (m *TaskManager) Resume(id string) bool {
 	t.OutputFile = ""
 	m.mu.Unlock()
 
+	m.saveTasks() // 持久化
 	go m.schedule()
 	return true
 }
@@ -285,6 +354,7 @@ func (m *TaskManager) Merge(id string) bool {
 	t.Log = "强制合并中..."
 	m.mu.Unlock()
 
+	m.saveTasks() // 持久化
 	go m.runMerge(t)
 	return true
 }
@@ -315,28 +385,76 @@ func (m *TaskManager) runMerge(t *Task) {
 	// 简化处理：直接调用 ffmpeg concat 已有 .ts 文件
 	err := d.MergeOnly(ctx, t.cfg.TempDir, t.cfg.Output)
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if err != nil {
 		t.Status = StatusFailed
 		t.Log = fmt.Sprintf("❌ 强合失败: %v", err)
+		m.mu.Unlock()
+		// 强合失败保留 temp_dir，便于再次尝试
+		m.saveTasks() // 持久化
 		return
 	}
 	t.Status = StatusDone
 	t.OutputFile = t.cfg.Output
 	t.Log = fmt.Sprintf("✅ 强合完成: %s", t.cfg.Output)
+	tempDir := t.cfg.TempDir
+	m.mu.Unlock()
+	// 强合成功后清理 temp_dir（对齐 armv7l）
+	if tempDir != "" {
+		_ = os.RemoveAll(tempDir)
+	}
+	m.saveTasks() // 持久化
 }
 
-// Delete 删除任务记录（不能删除活跃中的）
+// CreateLocalMerge 创建一个"本地缓存合并"任务（不重新下载，直接复用 tempDir 中已有的 .ts 分片）
+// folderPath 是已存在分片的临时目录绝对路径，folderName 用于输出文件名与展示
+func (m *TaskManager) CreateLocalMerge(folderPath, folderName string) string {
+	id := uuid.New().String()[:8]
+	ts := time.Now().Format("0102_150405")
+	fullName := fmt.Sprintf("local_%s_%s_%s", folderName, ts, id[:3])
+
+	cfg := downloader.DefaultConfig()
+	cfg.URL = "local://" + folderName // 占位，不参与下载
+	cfg.FFmpegPath = m.ffmpegPath
+	cfg.Fingerprint = m.fingerprint
+	cfg.TempDir = folderPath
+	cfg.Output = filepath.Join(m.downloadDir, fullName+".mp4")
+	cfg.NoMerge = false // 走 MergeOnly
+
+	task := &Task{
+		ID:        id,
+		Name:      fullName,
+		URL:       cfg.URL,
+		Status:    StatusMerge,
+		Log:       "强制合并中（本地缓存）...",
+		CreatedAt: time.Now(),
+		cfg:       cfg,
+	}
+	task.cmd = fmt.Sprintf("ddm3u8-go --merge-only --temp-dir %s --output %s", folderPath, cfg.Output)
+
+	m.mu.Lock()
+	m.tasks[id] = task
+	m.order = append([]string{id}, m.order...)
+	m.mu.Unlock()
+
+	m.saveTasks() // 持久化
+	// 直接进入合并流程（不走 schedule/runTask，避免重新下载）
+	go m.runMerge(task)
+	return id
+}
+
+// Delete 删除任务记录（不能删除活跃中的）；同时清理 temp_dir
 func (m *TaskManager) Delete(id string) bool {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	t, ok := m.tasks[id]
 	if !ok {
+		m.mu.Unlock()
 		return false
 	}
 	if t.Status == StatusDownload || t.Status == StatusQueued || t.Status == StatusMerge {
+		m.mu.Unlock()
 		return false
 	}
+	tempDir := t.cfg.TempDir
 	delete(m.tasks, id)
 	for i, x := range m.order {
 		if x == id {
@@ -344,17 +462,26 @@ func (m *TaskManager) Delete(id string) bool {
 			break
 		}
 	}
+	m.mu.Unlock()
+	// 在锁外做磁盘 IO：删除残留缓存
+	if tempDir != "" {
+		_ = os.RemoveAll(tempDir)
+	}
+	m.saveTasks() // 持久化
 	return true
 }
 
-// Clear 清除所有非活跃任务
+// Clear 清除所有非活跃任务；同时清理各自的 temp_dir
 func (m *TaskManager) Clear() int {
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	var tempDirs []string
 	n := 0
 	for id, t := range m.tasks {
 		if t.Status == StatusDownload || t.Status == StatusQueued || t.Status == StatusMerge {
 			continue
+		}
+		if t.cfg.TempDir != "" {
+			tempDirs = append(tempDirs, t.cfg.TempDir)
 		}
 		delete(m.tasks, id)
 		n++
@@ -367,6 +494,12 @@ func (m *TaskManager) Clear() int {
 		}
 	}
 	m.order = newOrder
+	m.mu.Unlock()
+	// 在锁外做磁盘 IO
+	for _, d := range tempDirs {
+		_ = os.RemoveAll(d)
+	}
+	m.saveTasks() // 持久化
 	return n
 }
 
@@ -514,4 +647,174 @@ func (m *TaskManager) ListFolders() []string {
 		}
 	}
 	return folders
+}
+
+// ============ 任务历史持久化（对齐 armv7l：JSON 文件，原子写） ============
+
+// taskRecord 是任务的可序列化形式（剥离运行时字段：cfg/cancel/dl/startedAt）
+type taskRecord struct {
+	ID         string    `json:"id"`
+	Name       string    `json:"name"`
+	URL        string    `json:"url"`
+	Status     string    `json:"status"`
+	Log        string    `json:"log"`
+	Cmd        string    `json:"cmd,omitempty"`
+	OutputFile string    `json:"output_file,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+
+	// cfg 的关键字段，用于重启后重建 downloader.Config（断点续传）
+	CfgURL         string `json:"cfg_url"`
+	CfgOutput      string `json:"cfg_output"`
+	CfgTempDir     string `json:"cfg_temp_dir"`
+	CfgFingerprint string `json:"cfg_fingerprint"`
+	CfgReferer     string `json:"cfg_referer,omitempty"`
+	CfgUserAgent   string `json:"cfg_user_agent,omitempty"`
+}
+
+// saveTasks 把所有任务快照写盘（原子写：tmp + rename）。
+// 调用方必须已持有合适的锁（或快照已拷贝），本函数不再加 m.mu。
+// 在锁外执行文件 IO，避免持久化阻塞调度。
+// 空 dbPath 时为 no-op。
+func (m *TaskManager) saveTasks() {
+	if m.dbPath == "" {
+		return
+	}
+	m.mu.RLock()
+	// 拷贝一份快照，尽快释放锁
+	records := make([]taskRecord, 0, len(m.tasks))
+	for _, t := range m.tasks {
+		records = append(records, taskRecord{
+			ID: t.ID, Name: t.Name, URL: t.URL, Status: t.Status,
+			Log: t.Log, Cmd: t.cmd, OutputFile: t.OutputFile,
+			CreatedAt: t.CreatedAt,
+			CfgURL:         t.cfg.URL,
+			CfgOutput:       t.cfg.Output,
+			CfgTempDir:      t.cfg.TempDir,
+			CfgFingerprint:  t.cfg.Fingerprint,
+			CfgReferer:      t.cfg.Referer,
+			CfgUserAgent:    t.cfg.UserAgent,
+		})
+	}
+	dbPath := m.dbPath
+	m.mu.RUnlock()
+
+	tmp := dbPath + ".tmp"
+	data, err := json.MarshalIndent(records, "", "  ")
+	if err != nil {
+		return
+	}
+	if err := os.WriteFile(tmp, data, 0644); err != nil {
+		return
+	}
+	_ = os.Rename(tmp, dbPath)
+}
+
+// saveTasksSync 同步持久化（持有 m.mu 时调用），拷贝快照后在锁外写盘。
+// 用于状态变更后立即落盘，确保崩溃不丢记录。
+func (m *TaskManager) saveTasksSync() {
+	if m.dbPath == "" {
+		return
+	}
+	m.saveTasks()
+}
+
+// LoadTasks 从 dbPath 加载任务历史（启动时调用）。
+// 活跃状态（下载中/合并中/排队中）降级为"已中断"，可点恢复重启。
+// 非活跃状态（已完成/失败/取消/暂停）原样保留。
+func (m *TaskManager) LoadTasks() {
+	if m.dbPath == "" {
+		return
+	}
+	data, err := os.ReadFile(m.dbPath)
+	if err != nil {
+		// 文件不存在（首次启动）属正常，不报错
+		return
+	}
+	var records []taskRecord
+	if err := json.Unmarshal(data, &records); err != nil {
+		// 损坏的 db：备份后丢弃，避免反复读坏文件
+		bak := m.dbPath + ".corrupt"
+		_ = os.Rename(m.dbPath, bak)
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// 按 createdAt 升序恢复，再反转入 order（最新在前）
+	for _, r := range records {
+		t := &Task{
+			ID: r.ID, Name: r.Name, URL: r.URL, Status: r.Status,
+			Log: r.Log, cmd: r.Cmd, OutputFile: r.OutputFile,
+			CreatedAt: r.CreatedAt,
+		}
+		// 重建 cfg（用于恢复/强合）
+		t.cfg = downloader.DefaultConfig()
+		t.cfg.URL = r.CfgURL
+		t.cfg.Output = r.CfgOutput
+		t.cfg.TempDir = r.CfgTempDir
+		t.cfg.Fingerprint = r.CfgFingerprint
+		t.cfg.Referer = r.CfgReferer
+		t.cfg.UserAgent = r.CfgUserAgent
+		t.cfg.FFmpegPath = m.ffmpegPath
+		// 活跃状态降级：重启后无法续跑正在进行的 ctx，标记为中断
+		if t.Status == StatusDownload || t.Status == StatusMerge || t.Status == StatusQueued {
+			t.Status = StatusFailed
+			t.Log = "系统重启导致中断，可点恢复"
+		}
+		m.tasks[t.ID] = t
+	}
+	// order 按创建时间倒序
+	m.order = m.order[:0]
+	for id := range m.tasks {
+		m.order = append(m.order, id)
+	}
+	// 反转使最新在前（记录是任意顺序，按 CreatedAt 排）
+	for i, j := 0, len(m.order)-1; i < j; i, j = i+1, j-1 {
+		m.order[i], m.order[j] = m.order[j], m.order[i]
+	}
+	// 用 CreatedAt 稳定排序
+	type kv struct{ id string; ts time.Time }
+	tmp := make([]kv, len(m.order))
+	for i, id := range m.order {
+		tmp[i] = kv{id, m.tasks[id].CreatedAt}
+	}
+	for i := 0; i < len(tmp); i++ {
+		for j := i + 1; j < len(tmp); j++ {
+			if tmp[j].ts.After(tmp[i].ts) {
+				tmp[i], tmp[j] = tmp[j], tmp[i]
+			}
+		}
+	}
+	for i := range m.order {
+		m.order[i] = tmp[i].id
+	}
+}
+
+// CleanupOrphanTempDirs 启动时清理无任务对应的 _temp 目录（对齐 armv7l）。
+// 留下的活跃任务 temp_dir 不清，避免误删正在用的分片。
+func (m *TaskManager) CleanupOrphanTempDirs() int {
+	entries, err := os.ReadDir(m.downloadDir)
+	if err != nil {
+		return 0
+	}
+	m.mu.RLock()
+	active := map[string]bool{}
+	for _, t := range m.tasks {
+		if t.cfg.TempDir != "" {
+			active[filepath.Base(t.cfg.TempDir)] = true
+		}
+	}
+	m.mu.RUnlock()
+	cleaned := 0
+	for _, e := range entries {
+		name := e.Name()
+		if !e.IsDir() || !strings.HasSuffix(name, "_temp") {
+			continue
+		}
+		if active[name] {
+			continue
+		}
+		_ = os.RemoveAll(filepath.Join(m.downloadDir, name))
+		cleaned++
+	}
+	return cleaned
 }
