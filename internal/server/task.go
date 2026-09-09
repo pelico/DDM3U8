@@ -369,8 +369,8 @@ func (m *TaskManager) Merge(id string) bool {
 		m.mu.Unlock()
 		return false
 	}
-	// 下载已完成（Done/Failed）才能强合
-	if t.Status != StatusDone && t.Status != StatusFailed {
+	// 已完成 / 失败 / 已暂停 都允许强合（暂停时复用已下载的分片）
+	if t.Status != StatusDone && t.Status != StatusFailed && t.Status != StatusPaused {
 		m.mu.Unlock()
 		return false
 	}
