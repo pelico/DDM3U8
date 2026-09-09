@@ -14,14 +14,8 @@ tasks_history.json
 venv/
 
 # Local binaries and temporary files
-N_m3u8DL-RE
-N_m3u8DL-RE*.tar.gz
 tmp/
 temp/
-
-# 例外：vendor/ 目录下的 N_m3u8DL-RE 二进制包需要入库，供 Dockerfile COPY
-!vendor/
-!vendor/**
 
 # IDE
 .idea/

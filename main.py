@@ -4,7 +4,6 @@ import threading
 import json
 import uuid
 import datetime
-import tarfile
 import shutil
 import signal
 import re
@@ -32,19 +31,9 @@ logging.getLogger('werkzeug').setLevel(logging.ERROR)
 CONFIG = {
     "PORT": int(os.environ.get("PORT", 8080)),
     "DB_PATH": "/downloads/tasks_history.json",
-    "BIN_PATH": "/app/N_m3u8DL-RE",
     "DOWNLOAD_DIR": "/downloads",
-    "TEMP_EXTRACT_DIR": "/tmp/re_extract",
     "MAX_DOWNLOADS": int(os.environ.get("MAX_DOWNLOADS", 3))
 }
-
-def detect_download_core():
-    """自动检测可用的下载核心：优先 N_m3u8DL-RE，其次 yt-dlp"""
-    if os.path.exists(CONFIG["BIN_PATH"]):
-        return "n_m3u8dl_re"
-    if shutil.which("yt-dlp"):
-        return "yt-dlp"
-    return None
 
 def yt_dlp_impersonate_available():
     """
@@ -74,7 +63,7 @@ def yt_dlp_impersonate_available():
         logger.warning(f"[环境初始化] yt-dlp --impersonate 检测异常: {e}")
         return False
 
-DOWNLOAD_CORE = detect_download_core()
+DOWNLOAD_CORE = "yt-dlp"
 # yt-dlp --impersonate chrome 依赖 curl_cffi 及其底层 .so 完整可用，
 # 光装 pip 包不够（典型如 musl/缺 libcurl-impersonate 场景会装包成功但运行失败）。
 # 用 yt-dlp --list-impersonate-targets 实测，避免误加 --impersonate 导致任务直接退出 1。
@@ -148,7 +137,7 @@ def requires_auth(f):
 def validate_config():
     logger.info("=== 配置验证 ===")
     ok = True
-    
+
     # 验证下载目录
     if not os.path.exists(CONFIG["DOWNLOAD_DIR"]):
         try:
@@ -157,78 +146,34 @@ def validate_config():
         except Exception as e:
             log_error(f"无法创建下载目录 {CONFIG['DOWNLOAD_DIR']}: {e}")
             ok = False
-    
-    # 验证临时目录
-    if not os.path.exists(CONFIG["TEMP_EXTRACT_DIR"]):
-        try:
-            os.makedirs(CONFIG["TEMP_EXTRACT_DIR"], exist_ok=True)
-            logger.info(f"创建临时目录: {CONFIG['TEMP_EXTRACT_DIR']}")
-        except Exception as e:
-            log_error(f"无法创建临时目录 {CONFIG['TEMP_EXTRACT_DIR']}: {e}")
-            ok = False
-    
+
     # 验证 ffmpeg - 不强制要求，允许后台安装
     if not shutil.which("ffmpeg"):
         logger.warning("⚠️ ffmpeg 暂未安装，服务将继续运行，等待后台安装完成后才能进行合并操作")
     else:
         logger.info("ffmpeg 已安装")
-    
-    # 验证下载核心
-    global DOWNLOAD_CORE
-    DOWNLOAD_CORE = detect_download_core()
-    if DOWNLOAD_CORE == "n_m3u8dl_re":
-        logger.info(f"下载核心: N_m3u8DL-RE ({CONFIG['BIN_PATH']})")
-    elif DOWNLOAD_CORE == "yt-dlp":
-        logger.info("下载核心: yt-dlp")
-    else:
-        log_error("未检测到可用的下载核心（N_m3u8DL-RE 或 yt-dlp）")
+
+    # 验证下载核心 yt-dlp
+    if not shutil.which("yt-dlp"):
+        log_error("未检测到 yt-dlp，请检查镜像构建是否已安装")
         ok = False
-    
+    else:
+        logger.info("下载核心: yt-dlp")
+
     if ok:
         logger.info("配置验证完成")
     return ok
 
 # ================= 环境初始化 =================
-def extract_and_setup(tar_path, dest_path):
-    temp_extract_dir = CONFIG["TEMP_EXTRACT_DIR"]
-    if os.path.exists(temp_extract_dir): shutil.rmtree(temp_extract_dir)
-    os.makedirs(temp_extract_dir, exist_ok=True)
-    bin_found = False
-    try:
-        with tarfile.open(tar_path, "r:gz") as tar:
-            tar.extractall(path=temp_extract_dir)
-            for item in os.listdir(temp_extract_dir):
-                if item.startswith("N_m3u8DL-RE") and not item.endswith(".md"):
-                    src_path = os.path.join(temp_extract_dir, item)
-                    shutil.move(src_path, dest_path)
-                    os.chmod(dest_path, 0o755)
-                    bin_found = True
-                    break
-    finally:
-        shutil.rmtree(temp_extract_dir, ignore_errors=True)
-    if not bin_found: log_info("[环境初始化] 未找到N_m3u8DL-RE")
-
 def fix_environment():
     os.makedirs(CONFIG["DOWNLOAD_DIR"], exist_ok=True)
-    os.makedirs(CONFIG["TEMP_EXTRACT_DIR"], exist_ok=True)
-    
+
     if not shutil.which("ffmpeg"):
         log_info("[环境初始化] ffmpeg 未就绪，请检查镜像构建是否已安装 ffmpeg")
-    
-    bin_path = CONFIG["BIN_PATH"]
-    if os.path.exists(bin_path):
-        try:
-            os.chmod(bin_path, 0o755)
-        except Exception as e:
-            log_info(f"[环境初始化] 设置 N_m3u8DL-RE 权限失败: {str(e)}")
-        return
-    
-    log_info("[环境初始化] N_m3u8DL-RE 未就绪，请检查镜像构建是否已内置对应架构二进制")
 
 BOOT_STATE = {
     "phase": "unknown",
     "ffmpeg_ready": False,
-    "bin_ready": False,
     "download_core": None,
     "db_loaded": False,
     "downloads_ready": False,
@@ -238,7 +183,6 @@ BOOT_STATE = {
 
 def refresh_boot_state():
     BOOT_STATE["ffmpeg_ready"] = shutil.which("ffmpeg") is not None
-    BOOT_STATE["bin_ready"] = os.path.exists(CONFIG["BIN_PATH"])
     BOOT_STATE["download_core"] = DOWNLOAD_CORE
     BOOT_STATE["downloads_ready"] = os.path.isdir(CONFIG["DOWNLOAD_DIR"]) and os.access(CONFIG["DOWNLOAD_DIR"], os.W_OK)
     return BOOT_STATE
@@ -495,26 +439,22 @@ def run_audio_extract(task_id, audio_target):
 
 def run_download(task_id, cmd):
     task_name = tasks.get(task_id, {}).get('name', 'Unknown')
-    core = tasks.get(task_id, {}).get('core', 'n_m3u8dl_re')
-    log_info(f"[调度器] 任务 [{task_name}] 开始执行 (core={core})")
+    log_info(f"[调度器] 任务 [{task_name}] 开始执行 (core=yt-dlp)")
     log_info(f"[调度器] 命令: {' '.join(cmd)}")
     # 用于保存全部输出（最后 MAX_LOG_LINES 行），出错时回显给用户定位问题
     recent_lines = []
     try:
-        with TASK_LOCK: 
+        with TASK_LOCK:
             tasks[task_id]['status'] = '下载中'
             tasks[task_id]['process'] = None
         save_tasks()
-        
+
         # yt-dlp 需要将分片缓存落到 temp_dir（通过 TMPDIR + cwd 控制）
-        # N_m3u8DL-RE 由 --tmp-dir 参数自行控制，这里保持默认
-        popen_kwargs = dict(stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, encoding='utf-8', errors='ignore')
-        if core == 'yt-dlp':
-            temp_dir = tasks.get(task_id, {}).get('temp_dir', CONFIG["DOWNLOAD_DIR"])
-            env = os.environ.copy()
-            env['TMPDIR'] = temp_dir
-            popen_kwargs['env'] = env
-            popen_kwargs['cwd'] = temp_dir
+        temp_dir = tasks.get(task_id, {}).get('temp_dir', CONFIG["DOWNLOAD_DIR"])
+        os.makedirs(temp_dir, exist_ok=True)
+        env = os.environ.copy()
+        env['TMPDIR'] = temp_dir
+        popen_kwargs = dict(stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, encoding='utf-8', errors='ignore', env=env, cwd=temp_dir)
 
         process = subprocess.Popen(cmd, **popen_kwargs)
         
@@ -534,8 +474,8 @@ def run_download(task_id, cmd):
             recent_lines.append(log_content)
             if len(recent_lines) > MAX_LOG_LINES:
                 recent_lines.pop(0)
-            # yt-dlp 进度行含 "downloading"，N_m3u8DL-RE 含 % / B/s
-            if "%" in log_content or "B/s" in log_content or "downloading" in log_content.lower(): 
+            # yt-dlp 进度行含 "downloading" / % / B/s
+            if "%" in log_content or "B/s" in log_content or "downloading" in log_content.lower():
                 with TASK_LOCK:
                     if task_id in tasks:
                         tasks[task_id]['log'] = log_content[-100:]
@@ -545,7 +485,7 @@ def run_download(task_id, cmd):
         with TASK_LOCK:
             if task_id not in tasks or tasks[task_id]['status'] != '下载中':
                 pass
-            elif core == 'yt-dlp':
+            else:
                 # yt-dlp 输出 .ts，需 ffmpeg 封装为 .mp4
                 download_dir = tasks[task_id].get('download_dir', CONFIG["DOWNLOAD_DIR"])
                 temp_dir = tasks[task_id].get('temp_dir', os.path.join(download_dir, f"{task_name}_temp"))
@@ -556,19 +496,6 @@ def run_download(task_id, cmd):
                 else:
                     err_tail = ' | '.join(l for l in recent_lines[-30:] if l)
                     reason = f"进程退出码 {process.returncode}" if process.returncode != 0 else "假成功(未生成TS文件)"
-                    tasks[task_id]['status'] = '错误'
-                    tasks[task_id]['log'] = f'❌ {reason} 末尾输出: {err_tail[:2000]}'
-                    log_error(f"[调度器] 任务 [{task_name}] 失败: {reason}; 末尾输出: {err_tail}")
-            else:
-                # N_m3u8DL-RE 直接输出 .mp4
-                download_dir = tasks[task_id].get('download_dir', CONFIG["DOWNLOAD_DIR"])
-                expected_out_file = os.path.join(download_dir, f"{task_name}.mp4")
-                if process.returncode == 0 and os.path.exists(expected_out_file):
-                    tasks[task_id]['status'] = '已完成'
-                    tasks[task_id]['log'] = '✅ 完整下载并合并成功'
-                else:
-                    err_tail = ' | '.join(l for l in recent_lines[-30:] if l)
-                    reason = f"进程退出码 {process.returncode}" if process.returncode != 0 else "假成功(未生成最终MP4)"
                     tasks[task_id]['status'] = '错误'
                     tasks[task_id]['log'] = f'❌ {reason} 末尾输出: {err_tail[:2000]}'
                     log_error(f"[调度器] 任务 [{task_name}] 失败: {reason}; 末尾输出: {err_tail}")
@@ -620,15 +547,14 @@ def health():
 @app.route('/ready')
 def ready():
     state = refresh_boot_state()
-    # 下载核心就绪判断：N_m3u8DL-RE 存在 或 yt-dlp 可用
-    core_ready = state["bin_ready"] or state["download_core"] == "yt-dlp"
+    # 下载核心就绪判断：yt-dlp 可用
+    core_ready = state["download_core"] == "yt-dlp"
     ready_ok = state["downloads_ready"] and core_ready and state["ffmpeg_ready"]
     status_code = 200 if ready_ok else 503
     return jsonify({
         "ready": ready_ok,
         "phase": state["phase"],
         "ffmpeg_ready": state["ffmpeg_ready"],
-        "bin_ready": state["bin_ready"],
         "download_core": state["download_core"],
         "downloads_ready": state["downloads_ready"],
         "db_loaded": state["db_loaded"],
@@ -873,7 +799,7 @@ def down():
         # 始终确保下载目录存在（不只在 sub_path 非空时创建）：
         # boot() 的 fix_environment 已建 /downloads，但容器卷挂载变化、
         # 手动清理 /downloads、或 sub_path 为空时旧逻辑跳过 makedirs，
-        # 都会让 N_m3u8DL-RE 写入时报 errno 2 (ENOENT)。这里兜底重建。
+        # 都会让 yt-dlp 写入时报 errno 2 (ENOENT)。这里兜底重建。
         os.makedirs(download_dir, exist_ok=True)
         
         with TASK_LOCK:
@@ -999,7 +925,6 @@ def audio_extract():
 def start_task(url, name, task_id, download_dir=None, headers=None, core=None):
     """
     headers: dict, 可选的请求头
-    core: "n_m3u8dl_re" 或 "yt-dlp"，不传则自动检测
     """
     if download_dir is None:
         download_dir = CONFIG["DOWNLOAD_DIR"]
@@ -1007,83 +932,56 @@ def start_task(url, name, task_id, download_dir=None, headers=None, core=None):
         headers = {}
 
     ua = headers.get('User-Agent') or DEFAULT_USER_AGENT
-    # 优先使用调用方指定的 core，否则用自动检测的
-    if core not in ("n_m3u8dl_re", "yt-dlp"):
-        core = DOWNLOAD_CORE or "n_m3u8dl_re"
 
-    if core == "yt-dlp":
-        # yt-dlp 两步走方案（对齐 armv7l 分支）：
-        #   1) yt-dlp 下载原始 .ts 到 <temp_dir>/<name>.ts（--hls-prefer-native --fixup never 不做封装）
-        #   2) run_download 里用 ffmpeg -c copy 封装为 <download_dir>/<name>.mp4
-        # 分片缓存落到 temp_dir（通过 TMPDIR/cwd 控制），中断后 temp_dir 含 .ts 可强合
-        temp_ts = os.path.join(download_dir, f"{name}_temp", f"{name}.ts")
-        cmd = [
-            "yt-dlp", url,
-            "-o", temp_ts,
-            "--concurrent-fragments", "10",
-            "--hls-prefer-native",
-            "--no-part",
-            "--no-mtime",
-            "--fixup", "never",
-            "--retries", "10",
-            "--fragment-retries", "10",
-            "--retry-sleep", "fragment:exp=1:60",
-            "--user-agent", ua,
-        ]
-        # curl_cffi 缺失时（如 armv7l 无预编译 wheel）跳过，避免 yt-dlp 启动报错
-        if CURL_CFFI_OK:
-            cmd.extend(["--impersonate", "chrome"])
-        if headers.get("Referer"):
-            cmd.extend(["--add-header", f"Referer:{headers['Referer']}"])
-        if headers.get("Origin"):
-            cmd.extend(["--add-header", f"Origin:{headers['Origin']}"])
-        if headers.get("Cookie"):
-            cmd.extend(["--add-header", f"Cookie:{headers['Cookie']}"])
-        for custom in headers.get("Custom", "").splitlines():
-            custom = custom.strip()
-            if custom and ":" in custom:
-                cmd.extend(["--add-header", custom])
-    else:
-        # N_m3u8DL-RE 命令
-        cmd = [
-            CONFIG["BIN_PATH"], url,
-            "--save-name", name,
-            "--save-dir", download_dir,
-            "--tmp-dir", download_dir,
-            "-M", "format=mp4",
-            "--thread-count", "10",
-            "--header", f"User-Agent:{ua}",
-        ]
-        if headers.get("Referer"):
-            cmd.extend(["--header", f"Referer:{headers['Referer']}"])
-        if headers.get("Origin"):
-            cmd.extend(["--header", f"Origin:{headers['Origin']}"])
-        if headers.get("Cookie"):
-            cmd.extend(["--header", f"Cookie:{headers['Cookie']}"])
-        for custom in headers.get("Custom", "").splitlines():
-            custom = custom.strip()
-            if custom and ":" in custom:
-                cmd.extend(["--header", custom])
-
+    # yt-dlp 两步走方案（对齐 armv7l 分支）：
+    #   1) yt-dlp 下载原始 .ts 到 <temp_dir>/<name>.ts（--hls-prefer-native --fixup never 不做封装）
+    #   2) run_download 里用 ffmpeg -c copy 封装为 <download_dir>/<name>.mp4
+    # 分片缓存落到 temp_dir（通过 TMPDIR/cwd 控制），中断后 temp_dir 含 .ts 可强合
     temp_dir = os.path.join(download_dir, f"{name}_temp")
-    # 两种核心都需要 temp_dir：
-    #   N_m3u8DL-RE: 分片缓存目录
-    #   yt-dlp: 输出 .ts 文件 + 分片缓存（TMPDIR/cwd 指向此处）
-    os.makedirs(temp_dir, exist_ok=True)
+    temp_ts = os.path.join(temp_dir, f"{name}.ts")
+    cmd = [
+        "yt-dlp", url,
+        "-o", temp_ts,
+        "--concurrent-fragments", "10",
+        "--hls-prefer-native",
+        "--no-part",
+        "--no-mtime",
+        "--fixup", "never",
+        "--retries", "10",
+        "--fragment-retries", "10",
+        "--retry-sleep", "fragment:exp=1:60",
+        "--user-agent", ua,
+    ]
+    # curl_cffi 缺失时（如 armv7l 无预编译 wheel）跳过，避免 yt-dlp 启动报错
+    if CURL_CFFI_OK:
+        cmd.extend(["--impersonate", "chrome"])
+    if headers.get("Referer"):
+        cmd.extend(["--add-header", f"Referer:{headers['Referer']}"])
+    if headers.get("Origin"):
+        cmd.extend(["--add-header", f"Origin:{headers['Origin']}"])
+    if headers.get("Cookie"):
+        cmd.extend(["--add-header", f"Cookie:{headers['Cookie']}"])
+    for custom in headers.get("Custom", "").splitlines():
+        custom = custom.strip()
+        if custom and ":" in custom:
+            cmd.extend(["--add-header", custom])
+
+    # 仅预建下载根目录；temp_dir 由 yt-dlp 自行创建（-o 指定绝对路径）。
+    # 这里预建反而会留下空 _temp 目录，且若 cwd=temp_dir，yt-dlp 还会在 cwd 下生成相对路径文件，
+    # 导致多出一个文件夹。run_download 里会在 yt-dlp 未建好时兜底 makedirs。
     os.makedirs(download_dir, exist_ok=True)
     with TASK_LOCK:
         tasks[task_id] = {
-            'url': url, 
-            'name': name, 
-            'cmd': cmd, 
-            'status': '排队中', 
-            'log': '准备中...', 
+            'url': url,
+            'name': name,
+            'cmd': cmd,
+            'status': '排队中',
+            'log': '准备中...',
             'created_at': datetime.datetime.now().isoformat(timespec='seconds'),
             'process': None,
             'download_dir': download_dir,
             'temp_dir': temp_dir,
             'headers': headers,
-            'core': core
         }
     save_tasks()
 
