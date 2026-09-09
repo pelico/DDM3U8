@@ -218,7 +218,10 @@
                     </p>
                 </div>
                 <input type="text" class="input-full" name="sub_path" placeholder="选填：下载子目录（如 movie1）不填则存到根目录">
-                <button type="submit" class="btn btn-main" style="width: 100%;">开始下载</button>
+                <div class="input-group" style="gap: 10px;">
+                    <button type="submit" class="btn btn-main" style="flex: 1;">开始下载</button>
+                    <button type="button" id="clearFormBtn" class="btn btn-ghost" title="清空所有表单字段（含高级选项）">🗑️ 清除</button>
+                </div>
             </form>
         </div>
 
@@ -404,7 +407,11 @@
             try {
                 const response = await apiFetch('/down', { method: 'POST', body: new URLSearchParams(new FormData(this)) });
                 const data = await response.json().catch(() => ({}));
+                // 只清 url 和 sub_path（每个任务不同），保留 referer/cookie/ua/指纹/并发
+                // 方便同站点连续下载多个视频时不用重复填写
                 this.elements['url'].value = '';
+                if (this.elements['sub_path']) this.elements['sub_path'].value = '';
+                // name 保留（用户可能用序号命名），但如果上次改过名可手动清
                 if (data.message) showToast(data.message);
                 else showToast('任务添加成功');
                 refreshTasks(true);
@@ -413,6 +420,18 @@
             } finally {
                 button.disabled = false;
             }
+        };
+
+        // 一键清除：重置所有表单字段（含高级选项）
+        document.getElementById('clearFormBtn').onclick = function() {
+            const form = document.getElementById('downForm');
+            form.reset();
+            // reset 后恢复默认值（reset 会让 select/number 回到 HTML 默认）
+            form.elements['name'].value = 'video';
+            form.elements['referer'].value = 'https://';
+            form.elements['concurrency'].value = '3';
+            form.elements['fingerprint'].value = 'chrome';
+            showToast('表单已清空');
         };
 
         // 高级选项折叠
