@@ -5,21 +5,30 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-RUN apk add --no-cache ffmpeg su-exec tini tzdata bash
+# bash: 让云平台 web 终端能连（部分平台写死 /bin/bash）
+# gcc musl-dev libffi-dev: cffi 在 armv7l 无任何预编译轮子（musllinux/manylinux 都没 armv7l），
+# 必须源码编译 cffi，再装 curl_cffi 的 manylinux_2_28_armv7l wheel
+RUN apk add --no-cache ffmpeg su-exec tini tzdata bash gcc musl-dev libffi-dev
 
 COPY requirements.armv7l.txt .
-# alpine (musl) 上 pip 对 armv7l 默认只识别 musllinux 轮子，curl_cffi 不发 musllinux_armv7l
-# 只有 manylinux_2_28_armv7l 轮子；pip download 能下，但 pip install 检查平台标签会拒绝。
-# 直接 unzip wheel 文件到 site-packages 绕过检测——
-# curl_cffi 的 .so 静态链接 curl-impersonate，glibc 轮子在 musl 上也能跑（amd64/arm64 验证过）。
-RUN pip download --no-deps --dest /tmp/wheels --only-binary=:all: \
+# armv7l 上 curl_cffi 安装策略：
+# - cffi 在 armv7l 无任何轮子，必须源码编译（用上面装的 gcc/musl-dev/libffi-dev）
+# - curl_cffi 0.16.0 有 manylinux_2_28_armv7l 轮子，但 alpine (musl) 上 pip install 检查平台标签会拒绝
+# - 解决：pip download 下载 wheel 文件后用 unzip 直接解压到 site-packages，
+#   绕过 pip 的平台标签检测；curl_cffi 的 .so 静态链接 curl-impersonate，glibc 轮子在 musl 也能跑
+# - 装 cffi 源码包（armv7l 必须源码编译）
+# - unzip curl_cffi wheel 到 site-packages（绕过 pip install 平台检测）
+# - yt-dlp 和 Flask 是纯 Python 包，直接 pip install
+RUN pip install --no-cache-dir --retries 3 --timeout 60 cffi==2.1.1 \
+    && pip download --no-deps --dest /tmp/wheels --only-binary=:all: \
         --platform manylinux_2_28_armv7l --python-version 311 \
         --implementation cp --abi abi3 \
         curl_cffi==0.16.0 \
     && unzip -o /tmp/wheels/curl_cffi-*.whl -d /usr/local/lib/python3.11/site-packages/ \
     && pip install --no-cache-dir --retries 3 --timeout 60 \
         Flask==3.0.0 python-dotenv==1.0.0 yt-dlp==2026.8.19 \
-    && rm -rf /tmp/wheels
+    && rm -rf /tmp/wheels \
+    && apk del gcc musl-dev libffi-dev
 
 COPY templates ./templates
 COPY main.py .
