@@ -7,8 +7,10 @@ WORKDIR /app
 
 RUN apk add --no-cache ffmpeg su-exec tini tzdata
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir --retries 3 --timeout 60 -r requirements.txt
+COPY requirements.armv7l.txt .
+# armv7l 无 curl_cffi 预编译 wheel，源码编译会失败（cffi+curl-impersonate 缺依赖）
+# 不装 curl_cffi，main.py 的 CURL_CFFI_OK 检测会自动跳过 --impersonate
+RUN pip install --no-cache-dir --retries 3 --timeout 60 -r requirements.armv7l.txt
 
 COPY templates ./templates
 COPY main.py .
