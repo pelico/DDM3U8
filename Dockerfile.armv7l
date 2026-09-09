@@ -8,15 +8,16 @@ WORKDIR /app
 RUN apk add --no-cache ffmpeg su-exec tini tzdata bash
 
 COPY requirements.armv7l.txt .
-# alpine (musl) 上 pip 对 armv7l 默认不识别 manylinux 轮子（musllinux_armv7l 又没有），
-# 会掉回 sdist 编译失败。直接下载 manylinux_2_28_armv7l wheel 文件用文件路径安装，
-# 绕过 pip 平台标签检测——curl_cffi 的 .so 静态链接 curl-impersonate，glibc 轮子在 musl 也能跑。
+# alpine (musl) 上 pip 对 armv7l 默认只识别 musllinux 轮子，curl_cffi 不发 musllinux_armv7l
+# 只有 manylinux_2_28_armv7l 轮子；pip download 能下，但 pip install 检查平台标签会拒绝。
+# 直接 unzip wheel 文件到 site-packages 绕过检测——
+# curl_cffi 的 .so 静态链接 curl-impersonate，glibc 轮子在 musl 上也能跑（amd64/arm64 验证过）。
 RUN pip download --no-deps --dest /tmp/wheels --only-binary=:all: \
         --platform manylinux_2_28_armv7l --python-version 311 \
         --implementation cp --abi abi3 \
         curl_cffi==0.16.0 \
-    && pip install --no-cache-dir --retries 3 --timeout 60 /tmp/wheels/curl_cffi-*.whl \
-    && pip install --no-cache-dir --retries 3 --timeout 60 --no-deps \
+    && unzip -o /tmp/wheels/curl_cffi-*.whl -d /usr/local/lib/python3.11/site-packages/ \
+    && pip install --no-cache-dir --retries 3 --timeout 60 \
         Flask==3.0.0 python-dotenv==1.0.0 yt-dlp==2026.8.19 \
     && rm -rf /tmp/wheels
 
