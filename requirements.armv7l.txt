@@ -1,3 +1,8 @@
 Flask==3.0.0
 python-dotenv==1.0.0
-yt-dlp==2024.12.23
+yt-dlp==2026.8.19
+# yt-dlp 2026.x 锁定 curl-cffi !=0.6/0.7/0.8/0.9, <0.17, >=0.5.10
+# 实测 0.7.x 不发 armv7l manylinux 轮子（CI 覆盖不到）
+# 0.14.0+ 才有 manylinux_2_28_armv7l 轮子，armv7l 必须用 0.14.0+
+# 锁 0.16.0（与 yt-dlp [pin-curl-cffi] extra 同步），三架构统一
+curl_cffi==0.16.0

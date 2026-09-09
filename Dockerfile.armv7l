@@ -8,8 +8,7 @@ WORKDIR /app
 RUN apk add --no-cache ffmpeg su-exec tini tzdata bash
 
 COPY requirements.armv7l.txt .
-# armv7l 无 curl_cffi 预编译 wheel，源码编译会失败（cffi+curl-impersonate 缺依赖）
-# 不装 curl_cffi，main.py 的 CURL_CFFI_OK 检测会自动跳过 --impersonate
+# curl_cffi 0.16.0 自带 manylinux_2_28_armv7l 预编译轮子，armv7l 也能装上 TLS 指纹支持
 RUN pip install --no-cache-dir --retries 3 --timeout 60 -r requirements.armv7l.txt
 
 COPY templates ./templates
