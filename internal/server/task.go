@@ -172,6 +172,9 @@ func (m *TaskManager) runTask(t *Task) {
 	t.cancel = cancel
 	t.Status = StatusDownload
 	t.startedAt = time.Now()
+	// 启动时记录"下载命令"风格的日志（对齐 yt-dlp 版本的可观测性）
+	t.Log = fmt.Sprintf("[调度器] 任务开始: URL=%s 输出=%s 指纹=%s 并发=%d 临时目录=%s",
+		t.cfg.URL, t.cfg.Output, t.cfg.Fingerprint, t.cfg.Concurrency, t.cfg.TempDir)
 	t.dl = downloader.New(t.cfg, func(format string, v ...interface{}) {
 		// 关键日志写入 t.Log，但对 "seg N ok" 这类高频日志做摘要
 		msg := fmt.Sprintf(format, v...)
@@ -241,6 +244,86 @@ func (m *TaskManager) Cancel(id string) bool {
 	t.Status = StatusCanceled
 	t.Log = "已取消"
 	return true
+}
+
+// Resume 恢复任务：重新入队（用于失败/取消后重启）
+func (m *TaskManager) Resume(id string) bool {
+	m.mu.Lock()
+	t, ok := m.tasks[id]
+	if !ok {
+		m.mu.Unlock()
+		return false
+	}
+	if t.Status != StatusFailed && t.Status != StatusCanceled && t.Status != StatusDone {
+		m.mu.Unlock()
+		return false
+	}
+	t.Status = StatusQueued
+	t.Log = "等待执行（恢复）..."
+	t.OutputFile = ""
+	m.mu.Unlock()
+
+	go m.schedule()
+	return true
+}
+
+// Merge 强制合并：复用已下载的分片重新合并
+// 适用于下载完成但合并失败的场景
+func (m *TaskManager) Merge(id string) bool {
+	m.mu.Lock()
+	t, ok := m.tasks[id]
+	if !ok {
+		m.mu.Unlock()
+		return false
+	}
+	// 下载已完成（Done/Failed）才能强合
+	if t.Status != StatusDone && t.Status != StatusFailed {
+		m.mu.Unlock()
+		return false
+	}
+	t.Status = StatusMerge
+	t.Log = "强制合并中..."
+	m.mu.Unlock()
+
+	go m.runMerge(t)
+	return true
+}
+
+// runMerge 在 goroutine 中执行强制合并
+func (m *TaskManager) runMerge(t *Task) {
+	// 复用原 cfg 重新跑合并步骤
+	// Downloader 的 Run 会重新下载分片，不适合强合
+	// 这里直接调 ffmpeg concat 重新合并已有分片
+	ctx, cancel := context.WithCancel(context.Background())
+	m.mu.Lock()
+	t.cancel = cancel
+	m.mu.Unlock()
+	defer func() {
+		m.mu.Lock()
+		t.cancel = nil
+		m.mu.Unlock()
+	}()
+
+	// 直接用 downloader 的 merge 重新合并
+	// 构造一个最小 Downloader 只为调 merge
+	d := downloader.New(t.cfg, func(format string, v ...interface{}) {
+		m.mu.Lock()
+		t.Log = fmt.Sprintf(format, v...)
+		m.mu.Unlock()
+	})
+	// 直接调 merge 需要重新解析 playlist（拿 segments 列表和 MapURI）
+	// 简化处理：直接调用 ffmpeg concat 已有 .ts 文件
+	err := d.MergeOnly(ctx, t.cfg.TempDir, t.cfg.Output)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err != nil {
+		t.Status = StatusFailed
+		t.Log = fmt.Sprintf("❌ 强合失败: %v", err)
+		return
+	}
+	t.Status = StatusDone
+	t.OutputFile = t.cfg.Output
+	t.Log = fmt.Sprintf("✅ 强合完成: %s", t.cfg.Output)
 }
 
 // Delete 删除任务记录（不能删除活跃中的）

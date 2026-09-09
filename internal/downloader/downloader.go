@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -629,6 +630,66 @@ func (d *Downloader) merge(ctx context.Context, p *m3u8.Playlist, output string)
 		output,
 	)
 	cmd.Dir = d.cfg.TempDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// MergeOnly 只执行合并步骤：扫描 tempDir 中的 .ts 分片文件（按文件名升序），
+// 用 ffmpeg concat 合并成 output。用于"强合"按钮——复用已下载的分片，不重新下载。
+// 如果存在 _init.mp4（fMP4 初始化段），会自动放在第一位。
+func (d *Downloader) MergeOnly(ctx context.Context, tempDir, output string) error {
+	// 扫描所有 .ts 分片，按文件名升序排序
+	entries, err := os.ReadDir(tempDir)
+	if err != nil {
+		return fmt.Errorf("read temp dir: %w", err)
+	}
+	var segs []string
+	var hasInit bool
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if name == "_init.mp4" {
+			hasInit = true
+			continue
+		}
+		if filepath.Ext(name) == ".ts" {
+			segs = append(segs, name)
+		}
+	}
+	if len(segs) == 0 {
+		return fmt.Errorf("temp dir %s 下没有 .ts 分片文件", tempDir)
+	}
+	// 按文件名升序（seg_00000.ts, seg_00001.ts, ... 自然顺序）
+	sort.Strings(segs)
+
+	listPath := filepath.Join(tempDir, "_concat.txt")
+	var buf bytes.Buffer
+	if hasInit {
+		buf.WriteString("file '_init.mp4'\n")
+	}
+	for _, name := range segs {
+		fmt.Fprintf(&buf, "file '%s'\n", name)
+	}
+	if err := os.WriteFile(listPath, buf.Bytes(), 0644); err != nil {
+		return err
+	}
+
+	d.logger("强合: %d 个分片%s -> %s", len(segs),
+		map[bool]string{true: " (含 init)", false: ""}[hasInit], output)
+
+	cmd := exec.CommandContext(ctx, d.cfg.FFmpegPath,
+		"-y",
+		"-f", "concat",
+		"-safe", "0",
+		"-i", listPath,
+		"-c", "copy",
+		"-bsf:a", "aac_adtstoasc",
+		output,
+	)
+	cmd.Dir = tempDir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()

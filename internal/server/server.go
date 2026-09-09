@@ -210,6 +210,18 @@ func (s *Server) taskActionHandler(w http.ResponseWriter, r *http.Request) {
 			} else {
 				http.Error(w, "cannot cancel", http.StatusBadRequest)
 			}
+		case "resume": // 恢复/重新执行
+			if s.tm.Resume(id) {
+				w.WriteHeader(http.StatusOK)
+			} else {
+				http.Error(w, "cannot resume", http.StatusBadRequest)
+			}
+		case "merge": // 强合：复用已下载的分片重新合并
+			if s.tm.Merge(id) {
+				w.WriteHeader(http.StatusOK)
+			} else {
+				http.Error(w, "cannot merge", http.StatusBadRequest)
+			}
 		case "delete":
 			if s.tm.Delete(id) {
 				w.WriteHeader(http.StatusOK)
