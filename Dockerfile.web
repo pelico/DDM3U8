@@ -9,6 +9,7 @@ FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64
 ARG TARGETVARIANT
+ARG CACHE_BUST=1
 
 WORKDIR /src
 
@@ -18,15 +19,34 @@ RUN go mod download
 
 COPY . .
 
+# Debug: 打印目标架构，方便排查 "Exec format error"
+RUN echo "=== BUILD DEBUG ===" && \
+    echo "TARGETOS=$TARGETOS TARGETARCH=$TARGETARCH TARGETVARIANT=$TARGETVARIANT BUILDPLATFORM=$BUILDPLATFORM" && \
+    echo "CACHE_BUST=$CACHE_BUST"
+
 # 同时构建 CLI 版（ddm3u8-go）和 Web 版（ddm3u8-web）
 # CGO_ENABLED=0 → 静态二进制；GOARM 仅对 GOARCH=arm 生效（其它架构自动忽略）
+# 显式 export GOARM，确保 arm/v7 编译正确
 RUN case "$TARGETARCH" in \
       arm) export GOARM=${TARGETVARIANT#v} ;; \
     esac && \
+    echo "GOARM=$GOARM GOOS=$TARGETOS GOARCH=$TARGETARCH" && \
     CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
     go build -trimpath -ldflags="-s -w" -o /out/ddm3u8-go ./cmd/ddm3u8-go && \
     CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
     go build -trimpath -ldflags="-s -w" -o /out/ddm3u8-web ./cmd/ddm3u8-web
+
+# 验证二进制架构匹配目标架构（读 ELF header 的 machine 字段）
+# offset 0x12-0x13: 0x28=ARM32, 0xb7=AArch64, 0x3e=x86_64
+RUN echo "=== VERIFY BINARY ARCH ===" && \
+    od -A x -t x1 -N 20 /out/ddm3u8-web && \
+    MACHINE=$(od -A n -t x1 -j 18 -N 2 /out/ddm3u8-web | tr -d ' \n') && \
+    echo "ELF machine bytes: $MACHINE" && \
+    case "$TARGETARCH" in \
+      arm) echo "$MACHINE" | grep -q "^2800$" && echo "OK: arm 32-bit" || (echo "FAIL: expected arm32 (2800), got $MACHINE" && exit 1) ;; \
+      arm64) echo "$MACHINE" | grep -q "^b700$" && echo "OK: aarch64" || (echo "FAIL: expected aarch64 (b700), got $MACHINE" && exit 1) ;; \
+      amd64) echo "$MACHINE" | grep -q "^3e00$" && echo "OK: x86_64" || (echo "FAIL: expected x86_64 (3e00), got $MACHINE" && exit 1) ;; \
+    esac
 
 #--------- runtime：alpine + ffmpeg + 静态二进制 ---------
 FROM alpine:3.20
