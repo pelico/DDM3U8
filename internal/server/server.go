@@ -332,7 +332,7 @@ func (s *Server) downHandler(w http.ResponseWriter, r *http.Request) {
 		referer = ""
 	}
 	origin := strings.TrimSpace(r.FormValue("origin"))
-	cookie := strings.TrimSpace(r.FormValue("cookie"))
+	cookie := sanitizeCookie(r.FormValue("cookie"))
 	ua := strings.TrimSpace(r.FormValue("user_agent"))
 	if ua == "" {
 		ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
@@ -399,6 +399,71 @@ func (s *Server) downHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"message": msg, "created": created,
 	})
+}
+
+// sanitizeCookie 清洗用户粘贴的 Cookie 字符串
+// 支持任意格式输入（开发者工具整段复制、Set-Cookie 散行、纯 KV 等），
+// 只保留 name=value 对，丢弃 Cookie/Set-Cookie 标头前缀和 Path/Domain/Expires 等属性。
+// 例：
+//   "Cookie: cf_clearance=xxx; Path=/; HttpOnly; _cf_bm=yyy; Secure"
+//  -> "cf_clearance=xxx; _cf_bm=yyy"
+func sanitizeCookie(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	// 去掉可能的 "Cookie:" / "cookie:" / "Set-Cookie:" 前缀
+	for _, p := range []string{"set-cookie:", "cookie:"} {
+		if strings.HasPrefix(strings.ToLower(raw), p) {
+			raw = strings.TrimSpace(raw[len(p):])
+			break
+		}
+	}
+	// 同时按 `;` 与换行切分，兼容多行粘贴
+	raw = strings.ReplaceAll(raw, "\r", "\n")
+	parts := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ';' || r == '\n'
+	})
+
+	// Cookie 属性 key（大小写不敏感），出现则丢弃整个 pair
+	dropAttrs := map[string]struct{}{
+		"path": {}, "domain": {}, "expires": {}, "max-age": {},
+		"samesite": {}, "httponly": {}, "secure": {}, "comment": {},
+		"version": {}, "priority": {},
+	}
+
+	type kv struct{ k, v string }
+	seen := map[string]struct{}{}
+	var pairs []kv
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		eq := strings.Index(p, "=")
+		if eq <= 0 { // 没有 '=' 或 key 为空 → 像 HttpOnly/Secure 这种 flag，丢弃
+			continue
+		}
+		k := strings.TrimSpace(p[:eq])
+		v := strings.TrimSpace(p[eq+1:])
+		if k == "" || v == "" {
+			continue
+		}
+		lk := strings.ToLower(k)
+		if _, drop := dropAttrs[lk]; drop {
+			continue
+		}
+		if _, dup := seen[k]; dup {
+			continue // 同名 cookie 取第一次出现的
+		}
+		seen[k] = struct{}{}
+		pairs = append(pairs, kv{k, v})
+	}
+	out := make([]string, 0, len(pairs))
+	for _, p := range pairs {
+		out = append(out, p.k+"="+p.v)
+	}
+	return strings.Join(out, "; ")
 }
 
 // localMergeHandler POST /local_merge {folder_name}

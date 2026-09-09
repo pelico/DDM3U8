@@ -201,7 +201,7 @@
                 <div id="advancedOptions" style="display: none; margin-bottom: 10px;">
                     <input type="text" class="input-full" name="user_agent" placeholder="选填：User-Agent（留空使用默认浏览器UA）" style="margin-bottom: 8px;">
                     <input type="text" class="input-full" name="origin" placeholder="选填：Origin" style="margin-bottom: 8px;">
-                    <input type="text" class="input-full" name="cookie" placeholder="选填：Cookie（整段字符串）" style="margin-bottom: 8px;">
+                    <textarea class="input-full" name="cookie" rows="2" placeholder="选填：Cookie（可直接整段粘贴，自动清洗）&#10;支持任意格式：&#10;cf_clearance=xxx; _cf_bm=yyy&#10;或带前缀 Cookie: cf_clearance=...; Path=/; HttpOnly 等" style="margin-bottom: 8px;"></textarea>
                     <div class="input-group" style="margin-bottom: 8px; gap: 10px; align-items: center;">
                         <label style="font-size: 13px; color: #4b5563; white-space: nowrap;">并发数：</label>
                         <input type="number" name="concurrency" value="3" min="1" max="10" style="width: 70px; padding: 8px; border: 1px solid var(--border); border-radius: 8px;">
@@ -218,6 +218,7 @@
                         • 并发默认3避免触发风控，非限制资源可调到10<br>
                         • UA 和 TLS指纹要匹配：桌面Chrome UA 配 chrome 指纹，移动端 Edge/Chrome UA 也配 chrome，iOS Safari UA 配 safari，Firefox UA 配 firefox<br>
                         • sec-ch-ua 系列会根据 UA 自动推导，无需手动填<br>
+                        • Cookie 可直接整段粘贴（含 Cookie: 前缀、Path/HttpOnly 等属性都会自动清洗，只保留 name=value）<br>
                         • 握手被RST时：①换TLS指纹 ②补完整Cookie ③换出口IP<br>
                         • 同站点Cookie可复用，换站点才需重新获取
                     </p>

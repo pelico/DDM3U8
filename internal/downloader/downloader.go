@@ -427,6 +427,10 @@ func (d *Downloader) setHeaders(req *http.Request) {
 	if req.Header.Get("Accept-Language") == "" {
 		req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
 	}
+	// ⚠️ Accept-Encoding 故意不显式设置：
+	// 真实 Chrome 会发 "gzip, deflate, br, zstd"，但 Go http.Client 只自动解压 gzip，
+	// 不会自动解压 br/zstd。若照抄会让 CDN 返回 brotli 压缩流，导致分片数据损坏。
+	// 不设置时 Go Transport 会自动加 "gzip" 并自动解压，对二进制分片流最安全。
 	if req.Header.Get("Sec-Fetch-Site") == "" {
 		req.Header.Set("Sec-Fetch-Site", "cross-site")
 	}
@@ -435,6 +439,10 @@ func (d *Downloader) setHeaders(req *http.Request) {
 	}
 	if req.Header.Get("Sec-Fetch-Dest") == "" {
 		req.Header.Set("Sec-Fetch-Dest", "empty")
+	}
+	// priority：HTTP/2 优先级提示，Chrome 124+ 会发，缺失易被识别为非浏览器
+	if req.Header.Get("Priority") == "" {
+		req.Header.Set("Priority", "u=1, i")
 	}
 	// sec-ch-ua 系列：根据 UA 自动推导，确保 UA 和 sec-ch-ua 自洽
 	// （UA 是 Android 但 sec-ch-ua-platform 是 Windows 会被 CF 识别）
@@ -464,9 +472,10 @@ func (d *Downloader) setHeaders(req *http.Request) {
 	}
 	if req.Header.Get("sec-ch-ua") == "" {
 		// 从 UA 提取浏览器品牌和主版本号，构建 sec-ch-ua
-		// 默认 Chrome 126 桌面版
+		// brand 字符串随 Chrome 版本变化（120+ 常用 "Not_A Brand";v="8" / "Not)A;Brand" 等），
+		// CF 不会精确匹配，格式自洽即可
 		browser, version := parseBrowserFromUA(ua)
-		req.Header.Set("sec-ch-ua", fmt.Sprintf(`"Not.A/Brand";v="8", "%s";v="%s"`, browser, version))
+		req.Header.Set("sec-ch-ua", fmt.Sprintf(`"Not_A Brand";v="8", "%s";v="%s"`, browser, version))
 	}
 	// 用户自定义头会覆盖上面的默认值（放在最后赋值）
 	for k, v := range d.cfg.Headers {
