@@ -5,7 +5,7 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-RUN apk add --no-cache ffmpeg su-exec tini tzdata
+RUN apk add --no-cache ffmpeg su-exec tini tzdata bash
 
 COPY requirements.armv7l.txt .
 # armv7l 无 curl_cffi 预编译 wheel，源码编译会失败（cffi+curl-impersonate 缺依赖）

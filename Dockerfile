@@ -5,7 +5,7 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-RUN apk add --no-cache ffmpeg su-exec tini tzdata
+RUN apk add --no-cache ffmpeg su-exec tini tzdata bash
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir --retries 3 --timeout 60 -r requirements.txt
