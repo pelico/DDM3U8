@@ -45,6 +45,18 @@ type Config struct {
 	SkipVerify   bool
 	FFmpegPath   string // ffmpeg 二进制路径，空则跳过合并
 	NoMerge      bool   // 跳过 ffmpeg 合并，仅输出分片
+
+	// BestEffort=true 时：单个分片失败不立刻 cancel 所有 worker，让所有分片都跑完一次
+	// 自己的 retry（更耗时间，但能拿到完整失败率统计）。
+	// BestEffort=false（默认）时：保留旧的"一失败就全停"行为，避免长时间死磕。
+	BestEffort bool
+
+	// MaxFailureRate 失败率容忍阈值（0.0-1.0）。best-effort 模式下，所有分片都跑完后，
+	// 如果 Failed/Total <= MaxFailureRate，下载器认为任务"可完成"（返回 nil err），
+	// 上层进入合并阶段，把缺失分片跳过；ffmpeg 输出的 mp4 时长会变短但能播。
+	// 设 0.05 = 允许 5% 分片失败；设 0 = 任何失败都视为失败。
+	// 只在 BestEffort=true 时生效。
+	MaxFailureRate float64
 }
 
 // Progress 进度快照，供 Web 端轮询
@@ -61,13 +73,15 @@ type Progress struct {
 // DefaultConfig 返回默认配置
 func DefaultConfig() Config {
 	return Config{
-		Concurrency:  3, // 默认 3，避免短时间大量握手触发 CDN bot 风控
-		RetryMax:     10,
-		RetryBackoff: 5 * time.Second, // 退避起步 5 秒，避免快速 retry 加剧风控
-		Timeout:      60 * time.Second,
-		Fingerprint:  "chrome",
-		UserAgent:    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
-		FFmpegPath:   "ffmpeg",
+		Concurrency:    3, // 默认 3，避免短时间大量握手触发 CDN bot 风控
+		RetryMax:       10,
+		RetryBackoff:   5 * time.Second, // 退避起步 5 秒，避免快速 retry 加剧风控
+		Timeout:        60 * time.Second,
+		Fingerprint:    "chrome",
+		UserAgent:      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+		FFmpegPath:     "ffmpeg",
+		BestEffort:     true,           // 默认开：跑到所有分片都试过再决定
+		MaxFailureRate: 0.05,           // 允许 5% 分片失败（CDN 偶发拒绝容错）
 	}
 }
 
@@ -829,8 +843,12 @@ func (d *Downloader) downloadSegments(ctx context.Context, p *m3u8.Playlist, key
 			errMu.Lock()
 			if firstErr == nil {
 				firstErr = fmt.Errorf("seg %d: %w", seg.Index, err)
-				// 第一个分片失败时立即 cancel 所有 worker，让其它分片快速收手
-				cancelAll()
+				// 失败处理分两种模式：
+				//  1) BestEffort=false：第一个分片失败时立即 cancel 所有 worker，让其它分片快速收手
+				//  2) BestEffort=true：不 cancel，让所有分片都跑完自己的 retry，最后根据失败率决定
+				if !d.cfg.BestEffort {
+					cancelAll()
+				}
 			}
 			errMu.Unlock()
 			d.logger("seg %d 失败: %v", seg.Index, err)
@@ -869,7 +887,9 @@ func (d *Downloader) downloadSegments(ctx context.Context, p *m3u8.Playlist, key
 			return err
 		}
 		downloadOne(&p.Segments[0])
-		if firstErr != nil {
+		// BestEffort=false 时：第一个分片失败 → 立即返回（其他 worker 已被 cancelAll 杀掉）
+		// BestEffort=true 时：忽略早期失败，让所有分片都跑完，最后按失败率判断
+		if firstErr != nil && !d.cfg.BestEffort {
 			return firstErr
 		}
 	}
@@ -886,6 +906,23 @@ func (d *Downloader) downloadSegments(ctx context.Context, p *m3u8.Playlist, key
 		}()
 	}
 	wg.Wait()
+	// BestEffort 模式：所有分片都跑完后，根据失败率判断任务是否"可完成"
+	if d.cfg.BestEffort && firstErr != nil {
+		d.progressMu.RLock()
+		done, failed, total := d.progress.Done, d.progress.Failed, d.progress.Total
+		d.progressMu.RUnlock()
+		if total > 0 && done+failed >= total {
+			// 所有分片都已尝试过（要么成功要么彻底失败），按 MaxFailureRate 判定
+			failureRate := float64(failed) / float64(total)
+			if failureRate <= d.cfg.MaxFailureRate {
+				d.logger("✅ best-effort: 失败率 %.1f%% (≤ %.1f%% 阈值)，接受并进入合并",
+					failureRate*100, d.cfg.MaxFailureRate*100)
+				return nil // 视为下载成功，进入合并（缺失分片由 writeConcatList 跳过）
+			}
+			d.logger("⚠️ best-effort: 失败率 %.1f%% 超过 %.1f%% 阈值，任务失败",
+				failureRate*100, d.cfg.MaxFailureRate*100)
+		}
+	}
 	return firstErr
 }
 
@@ -1066,21 +1103,76 @@ func aesDecrypt(data, key, iv []byte) ([]byte, error) {
 }
 
 // merge 用 ffmpeg concat demuxer 合并分片
+// best-effort 模式：缺失的分片用 ffmpeg 生成的黑场占位填充，保持总时长一致
 func (d *Downloader) merge(ctx context.Context, p *m3u8.Playlist, output string) error {
-	// 生成 concat list 文件
+	// 1. 先扫一遍：哪些分片缺失？最大缺失时长是多少？
+	var missing, totalSegs int
+	var maxMissingDur float64
+	missingIdxs := []int{}
+	for i := range p.Segments {
+		segPath := filepath.Join(d.cfg.TempDir, fmt.Sprintf("seg_%05d.ts", p.Segments[i].Index))
+		if info, err := os.Stat(segPath); err == nil && info.Size() > 0 {
+			continue
+		}
+		missing++
+		missingIdxs = append(missingIdxs, i)
+		if p.Segments[i].Duration > maxMissingDur {
+			maxMissingDur = p.Segments[i].Duration
+		}
+		totalSegs++
+	}
+
+	// 2. 如果有缺失分片，生成一个黑场占位 .ts（时长取 maxMissingDur + 1s 余量）
+	//    concat demuxer 用 duration 指令把同一占位文件复用为多段，每段指定原始时长
+	placeholderPath := ""
+	if len(missingIdxs) > 0 {
+		placeholderPath = filepath.Join(d.cfg.TempDir, "_placeholder.ts")
+		// 占位时长：max + 1s 余量（避免 ffmpeg 报 "file too short"）
+		dur := maxMissingDur + 1.0
+		if dur < 1 {
+			dur = 1
+		}
+		genCmd := exec.CommandContext(ctx, d.cfg.FFmpegPath,
+			"-y",
+			"-f", "lavfi", "-i", fmt.Sprintf("color=size=1280x720:rate=25:duration=%.3f:color=black", dur),
+			"-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+			"-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+			"-c:a", "aac", "-b:a", "64k",
+			"-f", "mpegts",
+			placeholderPath,
+		)
+		genCmd.Stdout = os.Stdout
+		genCmd.Stderr = os.Stderr
+		if err := genCmd.Run(); err != nil {
+			return fmt.Errorf("生成黑场占位失败: %w", err)
+		}
+	}
+
+	// 3. 生成 concat list
 	listPath := filepath.Join(d.cfg.TempDir, "_concat.txt")
 	var buf bytes.Buffer
 	if p.MapURI != "" {
 		buf.WriteString("file '_init.mp4'\n")
 	}
 	for i := range p.Segments {
-		fmt.Fprintf(&buf, "file 'seg_%05d.ts'\n", p.Segments[i].Index)
+		idx := i
+		segPath := filepath.Join(d.cfg.TempDir, fmt.Sprintf("seg_%05d.ts", p.Segments[idx].Index))
+		if info, err := os.Stat(segPath); err == nil && info.Size() > 0 {
+			fmt.Fprintf(&buf, "file 'seg_%05d.ts'\n", p.Segments[idx].Index)
+		} else {
+			// 缺失：用占位 + duration 指令指定原始时长
+			fmt.Fprintf(&buf, "file '_placeholder.ts'\nduration %.3f\n", p.Segments[idx].Duration)
+		}
 	}
 	if err := os.WriteFile(listPath, buf.Bytes(), 0644); err != nil {
 		return err
 	}
+	if missing > 0 {
+		d.logger("⚠️ best-effort 合并: %d/%d 个分片用黑场占位替代，输出 mp4 时长保持一致",
+			missing, totalSegs)
+	}
 
-	// ffmpeg -f concat -safe 0 -i list -c copy out.mp4
+	// 4. ffmpeg concat 合并
 	cmd := exec.CommandContext(ctx, d.cfg.FFmpegPath,
 		"-y",
 		"-f", "concat",

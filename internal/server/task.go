@@ -300,8 +300,14 @@ func (m *TaskManager) runTask(t *Task) {
 	}
 	t.Status = StatusDone
 	t.OutputFile = result.OutputFile
-	t.Log = fmt.Sprintf("✅ 完成: %s (%d 分片, 失败 %d, 耗时 %s)",
-		result.OutputFile, result.Segments, result.Failed, result.Duration.Truncate(time.Millisecond))
+	if result.Failed > 0 {
+		// best-effort 完成：缺失分片已被黑场占位填充
+		t.Log = fmt.Sprintf("✅ 完成(部分失败): %s (%d 分片, 失败 %d 用黑场占位, 耗时 %s)",
+			result.OutputFile, result.Segments, result.Failed, result.Duration.Truncate(time.Millisecond))
+	} else {
+		t.Log = fmt.Sprintf("✅ 完成: %s (%d 分片, 失败 %d, 耗时 %s)",
+			result.OutputFile, result.Segments, result.Failed, result.Duration.Truncate(time.Millisecond))
+	}
 	tempDir := t.cfg.TempDir
 	m.mu.Unlock()
 	m.logSegDurationSummary(t, dl) // 成功时也输出耗时分布
