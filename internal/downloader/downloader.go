@@ -220,6 +220,16 @@ func (d *Downloader) Run(ctx context.Context) (*Result, error) {
 	}
 	result.Segments = len(playlist.Segments)
 	d.logger("分片总数: %d (live=%v)", result.Segments, playlist.IsLive)
+	// key 轮换探测：解析阶段统计了不同 key URI 数量，>1 说明源用了轮换 key，
+	// 当前实现只用最后一把 key 解全部分片，中间段会解错但不报错（花屏文件）。
+	// 这里只打 warn 方便踩坑时定位，不改实际解密逻辑（暂不实现 key 轮换）。
+	if playlist.KeyURICount > 1 {
+		d.logger("[warn] 检测到 key 轮换: 共 %d 把不同 key URI，当前只用了最后一把 '%s'，前 %d 段可能被错解密（输出文件可能花屏）",
+			playlist.KeyURICount, playlist.Encryption.URI, len(playlist.KeyURIsSample))
+		for i, u := range playlist.KeyURIsSample {
+			d.logger("[warn]   key #%d: %s", i+1, u)
+		}
+	}
 	d.progressMu.Lock()
 	d.progress.Total = result.Segments
 	d.progress.Status = "downloading"

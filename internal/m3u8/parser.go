@@ -13,15 +13,17 @@ import (
 
 // Playlist 表示一个 M3U8 播放列表
 type Playlist struct {
-	IsMaster   bool        // 是否为 master playlist（含 variant）
-	Variants   []Variant   // master 时的多码率变体列表
-	Segments   []Segment   // media playlist 时的分片列表
-	Encryption *Encryption // 加密信息（若有）
-	MapURI     string      // EXT-X-MAP 初始化段 URI（fMP4 前置段）
-	MapBytes   *ByteRange  // EXT-X-MAP 的 byte-range（若有）
-	TargetDur  int         // EXT-X-TARGETDURATION
-	Version    int         // EXT-X-VERSION
-	IsLive     bool        // 是否为 live（无 #EXT-X-ENDLIST）
+	IsMaster      bool        // 是否为 master playlist（含 variant）
+	Variants      []Variant   // master 时的多码率变体列表
+	Segments      []Segment   // media playlist 时的分片列表
+	Encryption    *Encryption // 加密信息（若有）
+	MapURI        string      // EXT-X-MAP 初始化段 URI（fMP4 前置段）
+	MapBytes      *ByteRange  // EXT-X-MAP 的 byte-range（若有）
+	TargetDur     int         // EXT-X-TARGETDURATION
+	Version       int         // EXT-X-VERSION
+	IsLive        bool        // 是否为 live（无 #EXT-X-ENDLIST）
+	KeyURICount   int         // 探测：解析过程中出现过的 #EXT-X-KEY 去重 URI 数；>1 表示源用了 key 轮换（当前实现只用最后一把 key 解全部分片）
+	KeyURIsSample []string    // 探测：当 KeyURICount > 1 时，记录前 N 个 key URI 给日志展示，方便定位
 }
 
 // Variant 是 master playlist 中的一个码率变体
@@ -73,6 +75,7 @@ func Parse(r io.Reader, baseURL string) (*Playlist, error) {
 		curByteRange       *ByteRange
 		curByteRangeHasOff bool  // 当前 EXT-X-BYTERANGE 是否显式带 @offset
 		prevRangeEnd       int64 // 上一个分片 range 的 offset+length，用于缺省 offset 接续
+		keyURISet          = map[string]struct{}{}
 	)
 
 	resolve := func(uri string) string {
@@ -130,6 +133,12 @@ func Parse(r io.Reader, baseURL string) (*Playlist, error) {
 					IV:     iv,
 				}
 				p.Encryption = curKey
+				// 探测 key 轮换：去重记录所有出现过的 key URI。
+				// 当前实现只用最后一把 key 解全部分片，多 key 场景会解错但不报错。
+				// 命中 >1 时输出 warn，让踩坑时能从日志一眼定位（无需改 Segment 结构体）。
+				if keyURI != "" {
+					keyURISet[resolve(unquote(keyURI))] = struct{}{}
+				}
 			case "#EXT-X-MAP":
 				uri, _ := getAttr(attrs, "URI")
 				p.MapURI = resolve(unquote(uri))
@@ -163,6 +172,18 @@ func Parse(r io.Reader, baseURL string) (*Playlist, error) {
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, err
+	}
+	// 探测 key 轮换：把去重结果填到 Playlist 上，供上层日志使用
+	if n := len(keyURISet); n > 0 {
+		p.KeyURICount = n
+		if n > 1 {
+			for u := range keyURISet {
+				if len(p.KeyURIsSample) >= 3 {
+					break
+				}
+				p.KeyURIsSample = append(p.KeyURIsSample, u)
+			}
+		}
 	}
 	return p, nil
 }
