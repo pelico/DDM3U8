@@ -113,6 +113,11 @@ type Downloader struct {
 	// 不再自动暂停——一个慢分片拖死整集太重，改为只延长 timeout。
 	OnAbuseDetected func()
 
+	// OnMergeStart 可选回调：进入 ffmpeg 合并阶段时触发，让上层把
+	// task.Status 切到"合并中"（避免老镜像"卡在 100% 不变"的体验问题）。
+	// 默认 nil，无副作用。
+	OnMergeStart func()
+
 	// 已下分片耗时跟踪：用于输出 seg 耗时分布日志（诊断主动掐/慢分片）
 	segDurMu  sync.Mutex
 	segDurs   []segDuration // 成功的分片耗时
@@ -373,6 +378,16 @@ func (d *Downloader) Run(ctx context.Context) (*Result, error) {
 		d.logger("跳过合并，分片位于: %s", output)
 	} else {
 		d.setProgress("merging", "ffmpeg 合并中")
+		// 通知上层切到"合并中"状态：前端状态条会立刻从"下载中 100%"切到"合并中"
+		if d.OnMergeStart != nil {
+			d.OnMergeStart()
+		}
+		// 显式打 log 让前端的 t.Log 同步显示"合并中..."，否则会卡在最后一条
+		// "下载中: X/X (100%)" 看上去像挂住，老镜像的已知问题。
+		// 同时给前端一个估算的输出大小（用已下载字节推算），让进度条合理
+		estBytes := atomic.LoadInt64(&d.downloadedBytes)
+		d.logger("合并中: %s (%d 分片, 预估 %s)...",
+			filepath.Base(output), result.Segments, humanBytes(estBytes))
 		if err := d.merge(ctx, playlist, output); err != nil {
 			d.setProgress("failed", fmt.Sprintf("merge: %v", err))
 			return result, fmt.Errorf("merge: %w", err)

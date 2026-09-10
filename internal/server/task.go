@@ -271,6 +271,15 @@ func (m *TaskManager) runTask(t *Task) {
 	// 给 CDN 一个"等流量过去"的窗口。任务继续跑，最终成功最好，
 	// 真不行也会 retry 耗尽后正常失败，前端可手动暂停。
 	t.dl.OnAbuseDetected = nil
+	// 合并阶段开始回调：把 task.Status 切到"合并中"，前端立刻从"下载中 100%"
+	// 切到"合并中"展示，避免老镜像"卡 100% 不变"的体验问题。
+	t.dl.OnMergeStart = func() {
+		m.mu.Lock()
+		if t.Status == StatusDownload {
+			t.Status = StatusMerge
+		}
+		m.mu.Unlock()
+	}
 	m.mu.Unlock()
 
 	// 执行下载
