@@ -238,13 +238,13 @@ func (m *TaskManager) runTask(t *Task) {
 			m.mu.Lock()
 			defer m.mu.Unlock()
 			if total > 0 {
-				logLine := fmt.Sprintf("下载中: %d/%d (失败 %d, %.0f%%)",
-					done, total, failed, float64(done)/float64(total)*100)
+				logLine := fmt.Sprintf("下载中: %d/%d (%.0f%%)",
+					done, total, float64(done)/float64(total)*100)
 				// 基于已下载字节估算最终文件大小
 				if done > 0 && bytes > 0 {
 					avg := bytes / int64(done)
 					estTotal := avg * int64(total)
-					logLine += fmt.Sprintf(" | %s / %s",
+					logLine += fmt.Sprintf(" | %s/%s",
 						formatBytes(bytes), formatBytes(estTotal))
 				}
 				// 显示当前下载速度
@@ -253,7 +253,7 @@ func (m *TaskManager) runTask(t *Task) {
 				}
 				t.Log = logLine
 			} else {
-				t.Log = fmt.Sprintf("下载中: 已完成 %d (失败 %d)", done, failed)
+				t.Log = fmt.Sprintf("下载中: 已完成 %d", done)
 			}
 			return
 		}
