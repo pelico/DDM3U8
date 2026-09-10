@@ -224,7 +224,7 @@ func (m *TaskManager) runTask(t *Task) {
 				if done > 0 && bytes > 0 {
 					avg := bytes / int64(done)
 					estTotal := avg * int64(total)
-					logLine += fmt.Sprintf(" | 已下 %s / 预估 %s",
+					logLine += fmt.Sprintf(" | %s / %s",
 						formatBytes(bytes), formatBytes(estTotal))
 				}
 				// 显示当前下载速度
