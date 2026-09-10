@@ -305,7 +305,8 @@ func (s *Server) videoFilesHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // downHandler POST /down 创建下载任务
-// 接收 form-urlencoded，字段与 Flask 完全兼容：
+// 同时支持 form-urlencoded / multipart-form-data（前端 + curl 习惯）和
+// application/json（容器 API 调用习惯）两种 body：
 //
 //	url, name, referer, origin, cookie, user_agent, custom_headers, sub_path
 func (s *Server) downHandler(w http.ResponseWriter, r *http.Request) {
@@ -313,12 +314,31 @@ func (s *Server) downHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "表单解析失败"})
-		return
+	// 1) 优先按 form 解析（兼容 Flask 原版 + curl + 前端表单）
+	_ = r.ParseForm()
+	// 2) 如果 form 解析没拿到 url，尝试按 JSON 解析（容器 API 调用常用 application/json；
+	//    Flask 用 request.form 不会读 JSON，所以 Go 这边补上这一支，避免外部 API 客户端
+	//    传 JSON body 时报"URL不能为空"）。JSON 解析失败则不报错（继续走 form 路径，body 已消耗也不影响）
+	jsonFallback := map[string]string{}
+	if r.FormValue("url") == "" && strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err == nil {
+			for k, v := range body {
+				if s, ok := v.(string); ok {
+					jsonFallback[k] = s
+				}
+			}
+		}
+	}
+	// get 优先读 form（兼容 Flask），form 没值时回退 JSON
+	get := func(key string) string {
+		if v := strings.TrimSpace(r.FormValue(key)); v != "" {
+			return v
+		}
+		return jsonFallback[key]
 	}
 
-	urlText := strings.TrimSpace(r.FormValue("url"))
+	urlText := get("url")
 	if urlText == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "URL不能为空"})
 		return
@@ -330,22 +350,22 @@ func (s *Server) downHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rawName := strings.TrimSpace(r.FormValue("name"))
+	rawName := get("name")
 	if rawName == "" {
 		rawName = "video"
 	}
-	referer := strings.TrimSpace(r.FormValue("referer"))
+	referer := get("referer")
 	if referer == "https://" {
 		referer = ""
 	}
-	origin := strings.TrimSpace(r.FormValue("origin"))
-	cookie := sanitizeCookie(r.FormValue("cookie"))
-	ua := strings.TrimSpace(r.FormValue("user_agent"))
+	origin := get("origin")
+	cookie := sanitizeCookie(get("cookie"))
+	ua := get("user_agent")
 	if ua == "" {
 		ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 	}
-	customHeaders := strings.TrimSpace(r.FormValue("custom_headers"))
-	subPath := strings.TrimSpace(r.FormValue("sub_path"))
+	customHeaders := get("custom_headers")
+	subPath := get("sub_path")
 
 	// 子路径处理（防目录遍历）
 	downloadDir := s.cfg.DownloadDir
