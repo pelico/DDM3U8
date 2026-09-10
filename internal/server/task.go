@@ -40,11 +40,11 @@ type Task struct {
 	CreatedAt  time.Time `json:"created_at"`
 
 	// 内部引用
-	cfg      downloader.Config
-	cancel   context.CancelFunc
-	dl       *downloader.Downloader
+	cfg       downloader.Config
+	cancel    context.CancelFunc
+	dl        *downloader.Downloader
 	startedAt time.Time
-	cmd      string
+	cmd       string
 }
 
 // TaskManager 管理所有任务
@@ -158,18 +158,25 @@ func (m *TaskManager) schedule() {
 			active++
 		}
 	}
-	// 找到排队中的任务，启动执行
+	// 找到排队中的任务，在同一次锁内立即占位为"下载中"，
+	// 避免 Unlock 后到 runTask 重新加锁设状态之间，被并发 schedule()
+	// 重复选中同一任务（check-then-act 竞态：一次提交多个 URL 会并发触发多个 schedule，
+	// 都读到同一 Queued 任务还未变 Downloading，导致对同一任务并发 runTask，
+	// 两个 Downloader 写同一 TempDir 且后启动者覆盖 t.dl/t.cancel 使前者无法取消）
 	var toStart *Task
-	for _, id := range m.order {
-		t := m.tasks[id]
-		if t.Status == StatusQueued {
-			toStart = t
-			break
+	if active < m.maxParallel {
+		for _, id := range m.order {
+			t := m.tasks[id]
+			if t.Status == StatusQueued {
+				t.Status = StatusDownload // 占位，runTask 内会重新设置完整运行时字段
+				toStart = t
+				break
+			}
 		}
 	}
 	m.mu.Unlock()
 
-	if toStart != nil && active < m.maxParallel {
+	if toStart != nil {
 		m.runTask(toStart)
 		// 启动后递归再调度（可能还能再起一个）
 		go m.schedule()
@@ -572,24 +579,24 @@ type Snapshot struct {
 
 // TaskView 是对外暴露的任务视图（去掉内部字段）
 type TaskView struct {
-	ID         string    `json:"id"`
-	Name       string    `json:"name"`
-	URL        string    `json:"url"`
-	Status     string    `json:"status"`
-	Log        string    `json:"log"`
-	Cmd        string    `json:"cmd,omitempty"`
-	OutputFile string    `json:"output_file,omitempty"`
-	CreatedAt  time.Time `json:"created_at"`
+	ID         string       `json:"id"`
+	Name       string       `json:"name"`
+	URL        string       `json:"url"`
+	Status     string       `json:"status"`
+	Log        string       `json:"log"`
+	Cmd        string       `json:"cmd,omitempty"`
+	OutputFile string       `json:"output_file,omitempty"`
+	CreatedAt  time.Time    `json:"created_at"`
 	Progress   ProgressView `json:"progress"`
 }
 
 // ProgressView 进度视图（映射 downloader.Progress）
 type ProgressView struct {
-	Total  int    `json:"total"`
-	Done   int    `json:"done"`
-	Failed int    `json:"failed"`
-	Current int   `json:"current"`
-	Status string `json:"status"`
+	Total   int    `json:"total"`
+	Done    int    `json:"done"`
+	Failed  int    `json:"failed"`
+	Current int    `json:"current"`
+	Status  string `json:"status"`
 }
 
 // Snapshot 返回当前快照
@@ -604,14 +611,14 @@ func (m *TaskManager) Snapshot() Snapshot {
 			active++
 		}
 		v := TaskView{
-			ID:        t.ID,
-			Name:      t.Name,
-			URL:       t.URL,
-			Status:    t.Status,
-			Log:       t.Log,
-			Cmd:       t.cmd,
+			ID:         t.ID,
+			Name:       t.Name,
+			URL:        t.URL,
+			Status:     t.Status,
+			Log:        t.Log,
+			Cmd:        t.cmd,
 			OutputFile: t.OutputFile,
-			CreatedAt: t.CreatedAt,
+			CreatedAt:  t.CreatedAt,
 		}
 		if t.dl != nil {
 			p := t.dl.Progress()
@@ -745,13 +752,13 @@ func (m *TaskManager) saveTasks() {
 		records = append(records, taskRecord{
 			ID: t.ID, Name: t.Name, URL: t.URL, Status: t.Status,
 			Log: t.Log, Cmd: t.cmd, OutputFile: t.OutputFile,
-			CreatedAt: t.CreatedAt,
+			CreatedAt:      t.CreatedAt,
 			CfgURL:         t.cfg.URL,
-			CfgOutput:       t.cfg.Output,
-			CfgTempDir:      t.cfg.TempDir,
-			CfgFingerprint:  t.cfg.Fingerprint,
-			CfgReferer:      t.cfg.Referer,
-			CfgUserAgent:    t.cfg.UserAgent,
+			CfgOutput:      t.cfg.Output,
+			CfgTempDir:     t.cfg.TempDir,
+			CfgFingerprint: t.cfg.Fingerprint,
+			CfgReferer:     t.cfg.Referer,
+			CfgUserAgent:   t.cfg.UserAgent,
 		})
 	}
 	dbPath := m.dbPath
@@ -766,15 +773,6 @@ func (m *TaskManager) saveTasks() {
 		return
 	}
 	_ = os.Rename(tmp, dbPath)
-}
-
-// saveTasksSync 同步持久化（持有 m.mu 时调用），拷贝快照后在锁外写盘。
-// 用于状态变更后立即落盘，确保崩溃不丢记录。
-func (m *TaskManager) saveTasksSync() {
-	if m.dbPath == "" {
-		return
-	}
-	m.saveTasks()
 }
 
 // LoadTasks 从 dbPath 加载任务历史（启动时调用）。
@@ -831,7 +829,10 @@ func (m *TaskManager) LoadTasks() {
 		m.order[i], m.order[j] = m.order[j], m.order[i]
 	}
 	// 用 CreatedAt 稳定排序
-	type kv struct{ id string; ts time.Time }
+	type kv struct {
+		id string
+		ts time.Time
+	}
 	tmp := make([]kv, len(m.order))
 	for i, id := range m.order {
 		tmp[i] = kv{id, m.tasks[id].CreatedAt}

@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"math/rand"
@@ -21,6 +22,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"golang.org/x/net/http2"
 
 	"github.com/pelico/DDM3U8-go/internal/m3u8"
 	utls "github.com/refraction-networking/utls"
@@ -46,13 +49,13 @@ type Config struct {
 
 // Progress 进度快照，供 Web 端轮询
 type Progress struct {
-	Total     int   // 分片总数
-	Done      int   // 已完成（成功）
-	Failed    int   // 失败数
-	Current   int   // 当前正在下载的分片序号（最近一个）
-	Status    string // 阶段: fetching / downloading / merging / done / failed
+	Total      int    // 分片总数
+	Done       int    // 已完成（成功）
+	Failed     int    // 失败数
+	Current    int    // 当前正在下载的分片序号（最近一个）
+	Status     string // 阶段: fetching / downloading / merging / done / failed
 	OutputFile string
-	Note      string // 最近一条日志/错误信息
+	Note       string // 最近一条日志/错误信息
 }
 
 // DefaultConfig 返回默认配置
@@ -63,7 +66,7 @@ func DefaultConfig() Config {
 		RetryBackoff: 5 * time.Second, // 退避起步 5 秒，避免快速 retry 加剧风控
 		Timeout:      60 * time.Second,
 		Fingerprint:  "chrome",
-		UserAgent:    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+		UserAgent:    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
 		FFmpegPath:   "ffmpeg",
 	}
 }
@@ -90,8 +93,8 @@ type Downloader struct {
 	OnHandshakeFails func()
 
 	// 进度快照（原子读写，供 Web 端轮询）
-	progress     Progress
-	progressMu   sync.RWMutex
+	progress   Progress
+	progressMu sync.RWMutex
 
 	// 已下载字节数（含断点续传预扫描的已存在分片）
 	// 用于估算最终文件大小：平均分片大小 × 总数
@@ -326,21 +329,18 @@ func (d *Downloader) buildClient() error {
 		proxyURL, _ = url.Parse(proxyStr)
 	}
 
-	// buildSpec 每次调用都新建一份 ClientHelloSpec，并把 ALPN 改为仅 http/1.1。
-	// 原因：uTLS Chrome 预设的 ALPN(h2,http/1.1) 会覆盖 Config.NextProtos，
-	// 服务器协商到 h2 后，标准 http.Transport（只会说 h1）会因收到 h2 SETTINGS
-	// 帧报 "malformed HTTP response" → EOF。
-	// 且 spec 的扩展内部有可变状态（GREASE/KeyShare），多连接共享同一份 spec 会
+	// buildSpec 每次调用都新建一份 ClientHelloSpec。
+	// ALPN 保留 uTLS Chrome 预设的 h2,http/1.1（不再强制锁死 h1）：
+	// 真实 Chrome/手机 App 访问 Cloudflare 站点 2024 之后基本清一色 h2，
+	// "ClientHello 说 h2 但实际走 h1" 本身就是干净的 bot 信号。
+	// 服务器只支持 h1 时，http2.Transport 会自动回退用 h1 协议工作（库内置能力），
+	// 不需要我们写回退分支。
+	// spec 的扩展内部有可变状态（GREASE/KeyShare），多连接共享同一份 spec 会
 	// 在并发握手时冲突 → "tls: internal error"。因此每连接独立构建 spec。
 	buildSpec := func() (*utls.ClientHelloSpec, error) {
 		spec, err := utls.UTLSIdToSpec(tlsSpec)
 		if err != nil {
 			return nil, err
-		}
-		for _, ext := range spec.Extensions {
-			if alpn, ok := ext.(*utls.ALPNExtension); ok {
-				alpn.AlpnProtocols = []string{"http/1.1"}
-			}
 		}
 		return &spec, nil
 	}
@@ -416,14 +416,33 @@ func (d *Downloader) buildClient() error {
 		}
 		// 握手成功则重置计数
 		atomic.StoreInt32(&d.handshakeFails, 0)
+		// 输出实际协商的 ALPN 协议（h2/http1.1/空），用于和抓包对账
+		alpn := tlsConn.ConnectionState().NegotiatedProtocol
+		if alpn == "" {
+			alpn = "(none/h1)"
+		}
+		d.logger("[h2探针] 握手成功 addr=%s ALPN=%s TLS=%s", addr, alpn, tlsConn.ConnectionState().Version)
 		return tlsConn, nil
 	}
-	transport := &http.Transport{
-		DialTLS:             dialTLS,
-		MaxIdleConns:        d.cfg.Concurrency * 2,
-		MaxIdleConnsPerHost: d.cfg.Concurrency * 2, // 默认只有 2，10 并发分片同 host 会导致 8 个请求无法复用连接→每分片都新建 TCP+uTLS 握手，CPU 飙升
-		IdleConnTimeout:     90 * time.Second,
-		DisableCompression:  false,
+	// h2 transport：客户端用 ALPN 协商 h2 时，多个分片请求会多路复用到同一条连接上，
+	// 模拟真实浏览器/App 的"一条 h2 连接、多个 stream 并发取分片"行为；
+	// 服务器只支持 h1 时，http2 库会自动回退 h1 协议工作。
+	// DialTLSContext 是关键钩子：uTLS 在这里完成握手并返回 *utls.UConn，
+	// UConn 实现了 net.Conn 接口，h2 transport 直接当 TCP+TLS 后的连接用。
+	// dialTLS 闭包复用上面的代理 CONNECT + uTLS 握手逻辑。
+	transport := &http2.Transport{
+		DialTLSContext: func(ctx context.Context, network, addr string, cfg *tls.Config) (net.Conn, error) {
+			// 注：cfg.ServerName 已经被 Go 设置为 host（去除端口），直接用作 SNI
+			conn, err := dialTLS(network, addr)
+			if err != nil {
+				return nil, err
+			}
+			return conn, nil
+		},
+		// h2 库自己管理多路复用 + 内部 conn pool，不需要外部 MaxIdleConns* 字段
+		IdleConnTimeout:    90 * time.Second,
+		DisableCompression: true, // h2 自身支持 HPACK 头压缩，无需 transport 层做
+		AllowHTTP:          false,
 	}
 	d.httpc = &http.Client{
 		Transport: transport,
@@ -453,16 +472,18 @@ func (c *bufferedReaderConn) Read(b []byte) (int, error) {
 }
 
 // pickTLSSpec 按配置选择 ClientHello 指纹
+// 默认 HelloChrome_133（uTLS v1.8.2 最高 Chrome 预设，与前端默认 UA Chrome/140 接近，
+// 避免预设与 UA 声明的版本对不上被自洽性检查抓）
 func (d *Downloader) pickTLSSpec() utls.ClientHelloID {
 	switch strings.ToLower(d.cfg.Fingerprint) {
 	case "safari":
 		return utls.HelloSafari_16_0
 	case "firefox":
-		return utls.HelloFirefox_105
+		return utls.HelloFirefox_120
 	case "chrome", "":
-		return utls.HelloChrome_106_Shuffle
+		return utls.HelloChrome_133
 	default:
-		return utls.HelloChrome_106_Shuffle
+		return utls.HelloChrome_133
 	}
 }
 
@@ -664,6 +685,8 @@ func (d *Downloader) doWithRetry(req *http.Request) (io.ReadCloser, error) {
 }
 
 // downloadSegments 并发下载所有分片
+// 渐进爬升：第一片同步下，让 transport 暖起连接、避免"启动瞬间对同 host 突发 N 条新连接"
+// 这种典型爬虫流量特征；之后才进 sem 限流的 goroutine 全量并发。
 func (d *Downloader) downloadSegments(ctx context.Context, p *m3u8.Playlist, key []byte) error {
 	sem := make(chan struct{}, d.cfg.Concurrency)
 	var wg sync.WaitGroup
@@ -678,56 +701,76 @@ func (d *Downloader) downloadSegments(ctx context.Context, p *m3u8.Playlist, key
 		}
 	}
 
-	for i := range p.Segments {
-		seg := p.Segments[i]
+	// downloadOne 封装单分片下载逻辑（断点续传检测 + 成功/失败分支），
+	// 启动阶段同步调用，剩余分片在 goroutine 内调用
+	downloadOne := func(seg *m3u8.Segment) {
+		outPath := filepath.Join(d.cfg.TempDir, fmt.Sprintf("seg_%05d.ts", seg.Index))
+		// 校验文件存在且大小>0：避免跳过上次网络中断写一半的损坏分片
+		if info, err := os.Stat(outPath); err == nil && info.Size() > 0 {
+			// 已下载（断点续传），跳过
+			// 注意：预扫描已把 Done 算进去了，这里只更新 Current，不重复 Done++
+			d.progressMu.Lock()
+			d.progress.Current = seg.Index
+			d.progressMu.Unlock()
+			return
+		}
+		if err := d.downloadFile(ctx, seg.URI, outPath, seg.ByteRange, key, fixedIV, seg.Index); err != nil {
+			atomic.AddInt32(&d.failed, 1)
+			errMu.Lock()
+			if firstErr == nil {
+				firstErr = fmt.Errorf("seg %d: %w", seg.Index, err)
+			}
+			errMu.Unlock()
+			d.logger("seg %d 失败: %v", seg.Index, err)
+			d.progressMu.Lock()
+			d.progress.Failed++
+			d.progress.Current = seg.Index
+			d.progress.Note = fmt.Sprintf("seg %d 失败: %v", seg.Index, err)
+			d.progressMu.Unlock()
+		} else {
+			// 累加已下载字节（用于估算最终文件大小）
+			var segBytes int64
+			if info, err := os.Stat(outPath); err == nil {
+				segBytes = info.Size()
+				atomic.AddInt64(&d.downloadedBytes, segBytes)
+			}
+			// 计算当前下载速度（滑动窗口）
+			speed := d.recordSpeed(segBytes)
+			// 先更新进度，再通过 logger 把快照传给上层（避免上层再 RLock progressMu 读）
+			d.progressMu.Lock()
+			d.progress.Done++
+			d.progress.Current = seg.Index
+			snap := d.progress
+			d.progressMu.Unlock()
+			// 用 "progress done/total/failed/bytes/speed" 格式，上层据此前缀做节流展示
+			bytes := atomic.LoadInt64(&d.downloadedBytes)
+			d.logger("progress %d/%d/%d/%d/%.0f", snap.Done, snap.Total, snap.Failed, bytes, speed)
+		}
+	}
+
+	// 阶段 1：同步下第一个分片，让 transport 完成首次 TLS 握手并把连接进 idle pool。
+	// 后续 goroutine 可立刻复用这条连接，避免"启动瞬间对同 host 突发 N 条新握手"的
+	// 典型爬虫流量特征（CF bot management 会看这个）。
+	// ctx 取消时（暂停/取消）直接返回
+	if len(p.Segments) > 0 {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		downloadOne(&p.Segments[0])
+		if firstErr != nil {
+			return firstErr
+		}
+	}
+
+	// 阶段 2：剩余分片并发下载，受 sem 限流
+	for i := 1; i < len(p.Segments); i++ {
+		seg := &p.Segments[i]
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-
-			outPath := filepath.Join(d.cfg.TempDir, fmt.Sprintf("seg_%05d.ts", seg.Index))
-			// 校验文件存在且大小>0：避免跳过上次网络中断写一半的损坏分片
-			if info, err := os.Stat(outPath); err == nil && info.Size() > 0 {
-				// 已下载（断点续传），跳过
-				// 注意：预扫描已把 Done 算进去了，这里只更新 Current，不重复 Done++
-				d.progressMu.Lock()
-				d.progress.Current = seg.Index
-				d.progressMu.Unlock()
-				return
-			}
-			if err := d.downloadFile(ctx, seg.URI, outPath, seg.ByteRange, key, fixedIV, seg.Index); err != nil {
-				atomic.AddInt32(&d.failed, 1)
-				errMu.Lock()
-				if firstErr == nil {
-					firstErr = fmt.Errorf("seg %d: %w", seg.Index, err)
-				}
-				errMu.Unlock()
-				d.logger("seg %d 失败: %v", seg.Index, err)
-				d.progressMu.Lock()
-				d.progress.Failed++
-				d.progress.Current = seg.Index
-				d.progress.Note = fmt.Sprintf("seg %d 失败: %v", seg.Index, err)
-				d.progressMu.Unlock()
-			} else {
-				// 累加已下载字节（用于估算最终文件大小）
-				var segBytes int64
-				if info, err := os.Stat(outPath); err == nil {
-					segBytes = info.Size()
-					atomic.AddInt64(&d.downloadedBytes, segBytes)
-				}
-				// 计算当前下载速度（滑动窗口）
-				speed := d.recordSpeed(segBytes)
-				// 先更新进度，再通过 logger 把快照传给上层（避免上层再 RLock progressMu 读）
-				d.progressMu.Lock()
-				d.progress.Done++
-				d.progress.Current = seg.Index
-				snap := d.progress
-				d.progressMu.Unlock()
-				// 用 "progress done/total/failed/bytes/speed" 格式，上层据此前缀做节流展示
-				bytes := atomic.LoadInt64(&d.downloadedBytes)
-				d.logger("progress %d/%d/%d/%d/%.0f", snap.Done, snap.Total, snap.Failed, bytes, speed)
-			}
+			downloadOne(seg)
 		}()
 	}
 	wg.Wait()
@@ -859,8 +902,14 @@ func aesDecrypt(data, key, iv []byte) ([]byte, error) {
 	mode := cipher.NewCBCDecrypter(block, iv)
 	dec := make([]byte, len(data))
 	mode.CryptBlocks(dec, data)
-	// 去 PKCS7 padding
-	if n := int(dec[len(dec)-1]); n > 0 && n <= 16 {
+	// 去 PKCS7 padding：校验末 n 个字节是否都等于 n，
+	// 不合法说明 key/IV 错误或数据损坏，直接报错而非静默截断产生损坏输出
+	if n := int(dec[len(dec)-1]); n > 0 && n <= 16 && n <= len(dec) {
+		for i := len(dec) - n; i < len(dec); i++ {
+			if int(dec[i]) != n {
+				return nil, fmt.Errorf("invalid PKCS7 padding (expected %d at %d, got %d)", n, i, dec[i])
+			}
+		}
 		dec = dec[:len(dec)-n]
 	}
 	return dec, nil

@@ -83,9 +83,10 @@
         td { padding: 14px 12px; border-bottom: 1px solid #f1f5f9; font-size: 14px; vertical-align: middle; color: #1f2937; }
         tr:last-child td { border-bottom: none; }
         tr:hover td { background: #f8fafc; }
-        .status-action-col { width: 220px; }
+        .status-action-col { width: 180px; }
         .select-col { width: 42px; }
-        .progress-col { width: 280px; }
+        .progress-col { width: 400px; }
+        .name-cell { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .status-action-cell { vertical-align: middle; }
         .status-action-wrapper { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
         .checkbox { width: 17px; height: 17px; cursor: pointer; accent-color: var(--primary); transition: transform 0.18s; }
@@ -203,10 +204,10 @@
                         <label style="font-size: 13px; color: #4b5563; white-space: nowrap;">📋 浏览器档：</label>
                         <select id="presetSelect" style="padding: 8px; border: 1px solid var(--border); border-radius: 8px; flex: 1;">
                             <option value="">— 选择浏览器档（自动填 UA + 指纹）—</option>
-                            <option value="android_edge">移动 Edge 140（Android）</option>
-                            <option value="android_chrome">移动 Chrome 140（Android）</option>
-                            <option value="win_chrome">桌面 Chrome 140（Win）</option>
-                            <option value="win_edge">桌面 Edge 140（Win）</option>
+                            <option value="android_edge">移动 Edge 133（Android）</option>
+                            <option value="android_chrome">移动 Chrome 133（Android）</option>
+                            <option value="win_chrome">桌面 Chrome 133（Win）</option>
+                            <option value="win_edge">桌面 Edge 133（Win）</option>
                             <option value="ios_safari">iOS Safari 17.5</option>
                             <option value="mac_safari">macOS Safari 17.5</option>
                             <option value="firefox">Firefox 130（桌面）</option>
@@ -466,21 +467,22 @@
         };
 
         // 浏览器档位预设：选了就自动填 UA + TLS指纹（Origin/Referer 保留你已填的）
+        // UA 版本号与 uTLS 预设对齐：chrome→HelloChrome_133、firefox→HelloFirefox_120，避免自洽性检查
         const PRESETS = {
             android_edge: {
-                ua: 'Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36 Edg/140.0.0.0',
+                ua: 'Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Mobile Safari/537.36 Edg/133.0.0.0',
                 fingerprint: 'chrome',
             },
             android_chrome: {
-                ua: 'Mozilla/5.0 (Linux; Android 10; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36',
+                ua: 'Mozilla/5.0 (Linux; Android 10; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Mobile Safari/537.36',
                 fingerprint: 'chrome',
             },
             win_chrome: {
-                ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
+                ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36',
                 fingerprint: 'chrome',
             },
             win_edge: {
-                ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36 Edg/140.0.0.0',
+                ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36 Edg/133.0.0.0',
                 fingerprint: 'chrome',
             },
             ios_safari: {

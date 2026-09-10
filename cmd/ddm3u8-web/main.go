@@ -39,16 +39,16 @@ func main() {
 	log.Printf("调度器已启动，最大并发下载数: %d", *maxParallel)
 
 	srv := server.New(server.Config{
-		Port:         *port,
-		DownloadDir:  *downloadDir,
-		TempBaseDir:  *downloadDir,
-		FFmpegPath:   *ffmpegPath,
-		Fingerprint:  *fingerprint,
-		MaxParallel:  *maxParallel,
-		WebUser:      *webUser,
-		WebPass:      *webPass,
-		DBPath:       *dbPath,
-		TemplatesFS:  templatesFS,
+		Port:        *port,
+		DownloadDir: *downloadDir,
+		TempBaseDir: *downloadDir,
+		FFmpegPath:  *ffmpegPath,
+		Fingerprint: *fingerprint,
+		MaxParallel: *maxParallel,
+		WebUser:     *webUser,
+		WebPass:     *webPass,
+		DBPath:      *dbPath,
+		TemplatesFS: templatesFS,
 	})
 	log.Fatal(srv.ListenAndServe())
 }

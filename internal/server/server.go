@@ -16,25 +16,25 @@ import (
 
 // Server Web 服务
 type Server struct {
-	tm     *TaskManager
-	cfg    Config
-	mux    *http.ServeMux
+	tm  *TaskManager
+	cfg Config
+	mux *http.ServeMux
 }
 
 // Config Web 服务配置
 type Config struct {
-	Port         string
-	DownloadDir  string
-	TempBaseDir  string
-	FFmpegPath   string
-	Fingerprint  string
-	MaxParallel  int
-	WebUser      string
-	WebPass      string
+	Port        string
+	DownloadDir string
+	TempBaseDir string
+	FFmpegPath  string
+	Fingerprint string
+	MaxParallel int
+	WebUser     string
+	WebPass     string
 	// DBPath 任务历史持久化路径（JSON 文件），空则不持久化
-	DBPath       string
+	DBPath string
 	// TemplatesFS 前端静态资源（embed 进二进制）
-	TemplatesFS  embed.FS
+	TemplatesFS embed.FS
 }
 
 // New 创建 Web 服务
@@ -149,13 +149,13 @@ func (s *Server) readyHandler(w http.ResponseWriter, r *http.Request) {
 		code = http.StatusServiceUnavailable
 	}
 	writeJSON(w, code, map[string]interface{}{
-		"ready":          ready,
-		"phase":          "running",
-		"ffmpeg_ready":   ffmpegOk,
-		"download_core":  "ddm3u8-go (uTLS)",
+		"ready":           ready,
+		"phase":           "running",
+		"ffmpeg_ready":    ffmpegOk,
+		"download_core":   "ddm3u8-go (uTLS)",
 		"downloads_ready": dlDirOk,
-		"db_loaded":      true,
-		"errors":         []string{},
+		"db_loaded":       true,
+		"errors":          []string{},
 	})
 }
 
@@ -191,7 +191,8 @@ func (s *Server) tasksHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // taskActionHandler POST /api/task/{id} {action: cancel/delete}
-//                  GET  /api/task/{id}/debug
+//
+//	GET  /api/task/{id}/debug
 func (s *Server) taskActionHandler(w http.ResponseWriter, r *http.Request) {
 	// path 形如 /api/task/{id} 或 /api/task/{id}/debug
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
@@ -214,7 +215,9 @@ func (s *Server) taskActionHandler(w http.ResponseWriter, r *http.Request) {
 
 	// POST 动作
 	if r.Method == http.MethodPost {
-		var body struct{ Action string `json:"action"` }
+		var body struct {
+			Action string `json:"action"`
+		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		switch body.Action {
 		case "pause": // 暂停：保留缓存，可断点恢复
@@ -271,7 +274,9 @@ func (s *Server) clearSelectedHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	var body struct{ IDs []string `json:"ids"` }
+	var body struct {
+		IDs []string `json:"ids"`
+	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
@@ -301,7 +306,8 @@ func (s *Server) videoFilesHandler(w http.ResponseWriter, r *http.Request) {
 
 // downHandler POST /down 创建下载任务
 // 接收 form-urlencoded，字段与 Flask 完全兼容：
-//   url, name, referer, origin, cookie, user_agent, custom_headers, sub_path
+//
+//	url, name, referer, origin, cookie, user_agent, custom_headers, sub_path
 func (s *Server) downHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -406,8 +412,9 @@ func (s *Server) downHandler(w http.ResponseWriter, r *http.Request) {
 // 支持任意格式输入（开发者工具整段复制、Set-Cookie 散行、纯 KV 等），
 // 只保留 name=value 对，丢弃 Cookie/Set-Cookie 标头前缀和 Path/Domain/Expires 等属性。
 // 例：
-//   "Cookie: cf_clearance=xxx; Path=/; HttpOnly; _cf_bm=yyy; Secure"
-//  -> "cf_clearance=xxx; _cf_bm=yyy"
+//
+//	 "Cookie: cf_clearance=xxx; Path=/; HttpOnly; _cf_bm=yyy; Secure"
+//	-> "cf_clearance=xxx; _cf_bm=yyy"
 func sanitizeCookie(raw string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {

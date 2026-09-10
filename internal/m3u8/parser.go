@@ -66,11 +66,13 @@ func Parse(r io.Reader, baseURL string) (*Playlist, error) {
 
 	p := &Playlist{IsLive: true} // 默认认为是 live，遇到 ENDLIST 再置 false
 	var (
-		curSeg       Segment
-		curSegSet    bool
-		curKey       *Encryption
-		segIndex     int
-		curByteRange *ByteRange
+		curSeg             Segment
+		curSegSet          bool
+		curKey             *Encryption
+		segIndex           int
+		curByteRange       *ByteRange
+		curByteRangeHasOff bool  // 当前 EXT-X-BYTERANGE 是否显式带 @offset
+		prevRangeEnd       int64 // 上一个分片 range 的 offset+length，用于缺省 offset 接续
 	)
 
 	resolve := func(uri string) string {
@@ -132,10 +134,10 @@ func Parse(r io.Reader, baseURL string) (*Playlist, error) {
 				uri, _ := getAttr(attrs, "URI")
 				p.MapURI = resolve(unquote(uri))
 				if br, ok := getAttr(attrs, "BYTERANGE"); ok {
-					p.MapBytes = parseByteRange(br)
+					p.MapBytes, _ = parseByteRange(br)
 				}
 			case "#EXT-X-BYTERANGE":
-				curByteRange = parseByteRange(attrs)
+				curByteRange, curByteRangeHasOff = parseByteRange(attrs)
 			}
 			continue
 		}
@@ -145,8 +147,14 @@ func Parse(r io.Reader, baseURL string) (*Playlist, error) {
 			curSeg.Index = segIndex
 			segIndex++
 			if curByteRange != nil {
+				// 缺省 @offset：按 HLS 规范接续上一个分片 range 的末尾
+				if !curByteRangeHasOff {
+					curByteRange.Offset = prevRangeEnd
+				}
+				prevRangeEnd = curByteRange.Offset + curByteRange.Length
 				curSeg.ByteRange = curByteRange
 				curByteRange = nil
+				curByteRangeHasOff = false
 			}
 			p.Segments = append(p.Segments, curSeg)
 			curSeg = Segment{}
@@ -212,16 +220,19 @@ func unquote(s string) string {
 	return s
 }
 
-// parseByteRange 解析 "length@offset" 或 "length"
-func parseByteRange(s string) *ByteRange {
+// parseByteRange 解析 HLS byte-range，返回 (range, hasOffset)。
+// hasOffset=false 表示省略了 @offset，按 HLS 规范应紧接上一个 range 的末尾，
+// 由解析主循环用 prevRangeEnd 填充为绝对偏移（不在此处理，因为 parser 不知道前文上下文）。
+func parseByteRange(s string) (*ByteRange, bool) {
 	s = strings.TrimSpace(s)
 	parts := strings.SplitN(s, "@", 2)
 	br := &ByteRange{}
 	br.Length, _ = strconv.ParseInt(parts[0], 10, 64)
 	if len(parts) > 1 {
 		br.Offset, _ = strconv.ParseInt(parts[1], 10, 64)
+		return br, true
 	}
-	return br
+	return br, false
 }
 
 // resolveURI 将相对 URI 解析为绝对 URI
