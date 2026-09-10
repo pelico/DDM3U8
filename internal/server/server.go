@@ -75,6 +75,9 @@ func (s *Server) routes() {
 	// 本地缓存合并（复用 /downloads 下的 .ts 分片，不重新下载）
 	s.mux.HandleFunc("/local_merge", s.withAuth(s.localMergeHandler))
 
+	// 音频提取（ffmpeg 把视频转 .m4a，与 armv7l Python 版同形）
+	s.mux.HandleFunc("/api/audio_extract", s.withAuth(s.audioExtractHandler))
+
 	// 健康检查
 	s.mux.HandleFunc("/health", s.healthHandler)
 	s.mux.HandleFunc("/ready", s.readyHandler)
@@ -209,6 +212,8 @@ func (s *Server) taskActionHandler(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "任务不存在"})
 			return
 		}
+		// 脱敏：Cookie 只显示前 20 字符（与 armv7l Python 版 /api/task/{id}/debug 行为一致）
+		t.Headers = MaskCookieInHeaders(t.Headers)
 		writeJSON(w, http.StatusOK, t)
 		return
 	}
@@ -527,6 +532,81 @@ func (s *Server) localMergeHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"message": "已创建本地合并任务",
 		"id":      id,
+	})
+}
+
+// audioExtractHandler POST /api/audio_extract {files:[{path:"..."}, ...]}
+// 调用 ffmpeg 把视频转成 .m4a；与 armv7l Python 版 /api/audio_extract 同形。
+func (s *Server) audioExtractHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	// 优先按 form 解析（兼容 Flask 版）
+	_ = r.ParseForm()
+	body := map[string]interface{}{}
+	if r.Header.Get("Content-Type") != "" && !strings.HasPrefix(r.Header.Get("Content-Type"), "application/x-www-form-urlencoded") && !strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+	}
+	// form 模式：files 是 JSON 字符串
+	filesRaw := r.FormValue("files")
+	var files []map[string]string
+	if filesRaw != "" {
+		_ = json.Unmarshal([]byte(filesRaw), &files)
+	}
+	if len(files) == 0 {
+		// JSON 模式：files 直接是数组
+		if v, ok := body["files"].([]interface{}); ok {
+			for _, item := range v {
+				if m, ok := item.(map[string]interface{}); ok {
+					if p, ok := m["path"].(string); ok {
+						files = append(files, map[string]string{"path": p})
+					}
+				}
+			}
+		}
+	}
+	if len(files) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "未选择任何视频文件"})
+		return
+	}
+
+	created := 0
+	for _, f := range files {
+		relPath := strings.TrimSpace(f["path"])
+		if relPath == "" {
+			continue
+		}
+		// 安全解析（防目录遍历）
+		inputPath, ok := safeSubPath(s.cfg.DownloadDir, relPath)
+		if !ok {
+			continue
+		}
+		info, err := os.Stat(inputPath)
+		if err != nil || info.IsDir() {
+			continue
+		}
+		// 输出：同目录、扩展名 .m4a
+		baseName := strings.TrimSuffix(filepath.Base(inputPath), filepath.Ext(inputPath))
+		dir := filepath.Dir(inputPath)
+		outputName := baseName + ".m4a"
+		var outputPath string
+		if dir == s.cfg.DownloadDir || dir == "." {
+			outputPath = filepath.Join(s.cfg.DownloadDir, outputName)
+		} else {
+			rel, _ := filepath.Rel(s.cfg.DownloadDir, dir)
+			outputPath = filepath.Join(s.cfg.DownloadDir, rel, outputName)
+		}
+		s.tm.CreateAudioExtract(inputPath, outputPath, s.cfg.FFmpegPath)
+		created++
+	}
+	if created == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "没有有效的视频文件可转换"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"message": fmt.Sprintf("已创建 %d 个音频提取任务", created),
+		"created": created,
 	})
 }
 

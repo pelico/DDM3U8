@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -46,6 +48,19 @@ type Task struct {
 	dl        *downloader.Downloader
 	startedAt time.Time
 	cmd       string
+
+	// 对外可见字段（与 armv7l 分支 Python 版对齐，中间件依赖这些字段同步任务）
+	DownloadDir  string            `json:"download_dir,omitempty"`
+	TempDir      string            `json:"temp_dir,omitempty"`
+	Headers      map[string]string `json:"headers,omitempty"`
+	FolderTarget string            `json:"folder_target,omitempty"`
+	AudioTarget  *AudioTarget      `json:"audio_target,omitempty"`
+}
+
+// AudioTarget 音频提取任务的目标文件对（与 Python 版 audio_target 同形）
+type AudioTarget struct {
+	InputPath  string `json:"input_path"`
+	OutputPath string `json:"output_path"`
 }
 
 // TaskManager 管理所有任务
@@ -118,6 +133,10 @@ func (m *TaskManager) CreateWithDir(url, name string, headers map[string]string,
 		Log:       "等待执行...",
 		CreatedAt: time.Now(),
 		cfg:       cfg,
+		// 对外可见字段：中间件通过 download_dir / temp_dir / headers 同步任务进度
+		DownloadDir: downloadDir,
+		TempDir:     cfg.TempDir,
+		Headers:     headers,
 	}
 	task.cmd = buildCmdString(cfg)
 
@@ -644,6 +663,10 @@ func (m *TaskManager) CreateLocalMerge(folderPath, folderName string) string {
 		Log:       "强制合并中（本地缓存）...",
 		CreatedAt: time.Now(),
 		cfg:       cfg,
+		// 对外可见字段：与 armv7l Python 版对齐（folder_target 标识本地合并源目录）
+		DownloadDir:  m.downloadDir,
+		TempDir:      folderPath,
+		FolderTarget: folderName,
 	}
 	task.cmd = fmt.Sprintf("ddm3u8-go --merge-only --temp-dir %s --output %s", folderPath, cfg.Output)
 
@@ -656,6 +679,123 @@ func (m *TaskManager) CreateLocalMerge(folderPath, folderName string) string {
 	// 直接进入合并流程（不走 schedule/runTask，避免重新下载）
 	go m.runMerge(task)
 	return id
+}
+
+// CreateAudioExtract 创建一个"音频提取"任务：调用 ffmpeg 把视频文件转成 .m4a 音频。
+// inputPath / outputPath 是绝对路径；ffmpegPath 用于指定 ffmpeg 二进制。
+// 任务会进入 schedule 自动运行（与下载任务共用并发槽）。
+func (m *TaskManager) CreateAudioExtract(inputPath, outputPath, ffmpegPath string) string {
+	id := uuid.New().String()[:8]
+	baseName := filepath.Base(inputPath)
+	ext := filepath.Ext(baseName)
+	nameOnly := strings.TrimSuffix(baseName, ext)
+	ts := time.Now().Format("0102_150405")
+	taskName := fmt.Sprintf("%s_%s_%s", nameOnly, ts, id[:3])
+
+	task := &Task{
+		ID:        id,
+		Name:      taskName,
+		URL:       "音频提取: " + baseName,
+		Status:    StatusQueued,
+		Log:       "等待转换...",
+		CreatedAt: time.Now(),
+		cfg: downloader.Config{
+			FFmpegPath: ffmpegPath,
+		},
+		// 对外可见字段：与 armv7l Python 版 audio_target 同形
+		DownloadDir: filepath.Dir(inputPath),
+		AudioTarget: &AudioTarget{
+			InputPath:  inputPath,
+			OutputPath: outputPath,
+		},
+	}
+	task.cmd = fmt.Sprintf("ffmpeg -y -i %s -vn -acodec aac -b:a 192k %s", inputPath, outputPath)
+
+	m.mu.Lock()
+	m.tasks[id] = task
+	m.order = append([]string{id}, m.order...)
+	m.mu.Unlock()
+
+	m.saveTasks() // 持久化
+	go m.runAudioExtract(task)
+	return id
+}
+
+// runAudioExtract 跑 ffmpeg 提取音频；完成后清理 process 状态。
+func (m *TaskManager) runAudioExtract(t *Task) {
+	if t.AudioTarget == nil {
+		return
+	}
+	inputPath := t.AudioTarget.InputPath
+	outputPath := t.AudioTarget.OutputPath
+	ffmpegPath := t.cfg.FFmpegPath
+	if ffmpegPath == "" {
+		ffmpegPath = "ffmpeg"
+	}
+
+	// 转"转换中" + 注册 cancel
+	m.mu.Lock()
+	t.Status = "转换中"
+	if t.cancel != nil {
+		t.cancel()
+	}
+	t.cancel = nil
+	ctx, cancel := context.WithCancel(context.Background())
+	t.cancel = cancel
+	m.mu.Unlock()
+	defer cancel()
+
+	t.Log = "开始提取音频..."
+	m.saveTasks()
+
+	cmd := exec.CommandContext(ctx, ffmpegPath, "-y", "-i", inputPath, "-vn", "-acodec", "aac", "-b:a", "192k", outputPath)
+	stdout, _ := cmd.StdoutPipe()
+	stderr, _ := cmd.StderrPipe()
+	if err := cmd.Start(); err != nil {
+		m.mu.Lock()
+		t.Status = StatusFailed
+		t.Log = fmt.Sprintf("❌ ffmpeg 启动失败: %v", err)
+		m.mu.Unlock()
+		m.saveTasks()
+		return
+	}
+	// 简单 tail：把 ffmpeg 输出的"size=/time="行写到 log
+	go func() {
+		reader := io.MultiReader(stdout, stderr)
+		buf := make([]byte, 256)
+		last := ""
+		for {
+			n, err := reader.Read(buf)
+			if n > 0 {
+				chunk := string(buf[:n])
+				if strings.Contains(chunk, "time=") || strings.Contains(chunk, "size=") {
+					last = chunk[strings.LastIndexAny(chunk, "\r\n")+1:]
+					if len(last) > 100 {
+						last = last[len(last)-100:]
+					}
+					m.mu.Lock()
+					t.Log = strings.TrimSpace(last)
+					m.mu.Unlock()
+				}
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	err := cmd.Wait()
+	m.mu.Lock()
+	if err != nil {
+		t.Status = StatusFailed
+		t.Log = fmt.Sprintf("❌ FFmpeg转换失败(退出码:%d)", cmd.ProcessState.ExitCode())
+	} else {
+		t.Status = "完成(音频)"
+		t.Log = "✅ 音频提取成功: " + filepath.Base(outputPath)
+	}
+	t.cancel = nil
+	m.mu.Unlock()
+	m.saveTasks()
 }
 
 // Delete 删除任务记录（不能删除活跃中的）；同时清理 temp_dir
@@ -728,16 +868,25 @@ type Snapshot struct {
 }
 
 // TaskView 是对外暴露的任务视图（去掉内部字段）
+//
+// 字段命名与 armv7l 分支 Python 版严格对齐：download_dir / temp_dir / headers /
+// folder_target / audio_target / cmd_str。这样外部中间件可以无缝对接 go-core 后端。
 type TaskView struct {
-	ID         string       `json:"id"`
-	Name       string       `json:"name"`
-	URL        string       `json:"url"`
-	Status     string       `json:"status"`
-	Log        string       `json:"log"`
-	Cmd        string       `json:"cmd,omitempty"`
-	OutputFile string       `json:"output_file,omitempty"`
-	CreatedAt  time.Time    `json:"created_at"`
-	Progress   ProgressView `json:"progress"`
+	ID           string            `json:"id"`
+	Name         string            `json:"name"`
+	URL          string            `json:"url"`
+	Status       string            `json:"status"`
+	Log          string            `json:"log"`
+	Cmd          string            `json:"cmd,omitempty"`
+	CmdStr       string            `json:"cmd_str,omitempty"` // 与 Python 版兼容（Python 区分 cmd list 与 cmd_str 字符串）
+	OutputFile   string            `json:"output_file,omitempty"`
+	CreatedAt    time.Time         `json:"created_at"`
+	DownloadDir  string            `json:"download_dir,omitempty"`
+	TempDir      string            `json:"temp_dir,omitempty"`
+	Headers      map[string]string `json:"headers,omitempty"`
+	FolderTarget string            `json:"folder_target,omitempty"`
+	AudioTarget  *AudioTarget      `json:"audio_target,omitempty"`
+	Progress     ProgressView      `json:"progress"`
 }
 
 // ProgressView 进度视图（映射 downloader.Progress）
@@ -761,14 +910,20 @@ func (m *TaskManager) Snapshot() Snapshot {
 			active++
 		}
 		v := TaskView{
-			ID:         t.ID,
-			Name:       t.Name,
-			URL:        t.URL,
-			Status:     t.Status,
-			Log:        t.Log,
-			Cmd:        t.cmd,
-			OutputFile: t.OutputFile,
-			CreatedAt:  t.CreatedAt,
+			ID:           t.ID,
+			Name:         t.Name,
+			URL:          t.URL,
+			Status:       t.Status,
+			Log:          t.Log,
+			Cmd:          t.cmd,
+			CmdStr:       t.cmd, // 与 armv7l Python 版同名同义
+			OutputFile:   t.OutputFile,
+			CreatedAt:    t.CreatedAt,
+			DownloadDir:  t.DownloadDir,
+			TempDir:      t.TempDir,
+			Headers:      t.Headers,
+			FolderTarget: t.FolderTarget,
+			AudioTarget:  t.AudioTarget,
 		}
 		if t.dl != nil {
 			p := t.dl.Progress()
@@ -795,8 +950,11 @@ func (m *TaskManager) Get(id string) (TaskView, bool) {
 	}
 	v := TaskView{
 		ID: t.ID, Name: t.Name, URL: t.URL, Status: t.Status,
-		Log: t.Log, Cmd: t.cmd, OutputFile: t.OutputFile,
-		CreatedAt: t.CreatedAt,
+		Log: t.Log, Cmd: t.cmd, CmdStr: t.cmd,
+		OutputFile: t.OutputFile, CreatedAt: t.CreatedAt,
+		DownloadDir: t.DownloadDir, TempDir: t.TempDir,
+		Headers: t.Headers, FolderTarget: t.FolderTarget,
+		AudioTarget: t.AudioTarget,
 	}
 	if t.dl != nil {
 		p := t.dl.Progress()
@@ -806,6 +964,24 @@ func (m *TaskManager) Get(id string) (TaskView, bool) {
 		}
 	}
 	return v, true
+}
+
+// MaskCookieInHeaders 复制 headers 并把 Cookie 值脱敏为前 20 字符 + "..."，
+// 与 armv7l 分支 Python 版 /api/task/{id}/debug 行为一致。
+// 用于暴露给前端的调试接口，避免 Cookie 完整泄露。
+func MaskCookieInHeaders(h map[string]string) map[string]string {
+	if h == nil {
+		return nil
+	}
+	out := make(map[string]string, len(h))
+	for k, v := range h {
+		if strings.EqualFold(k, "Cookie") && len(v) > 20 {
+			out[k] = v[:20] + "...(已脱敏)"
+		} else {
+			out[k] = v
+		}
+	}
+	return out
 }
 
 // ListVideoFiles 扫描下载目录里的视频文件
@@ -885,6 +1061,13 @@ type taskRecord struct {
 	CfgFingerprint string `json:"cfg_fingerprint"`
 	CfgReferer     string `json:"cfg_referer,omitempty"`
 	CfgUserAgent   string `json:"cfg_user_agent,omitempty"`
+
+	// 对外可见字段：与 armv7l Python 版持久化同形，重启后中间件仍可读到
+	DownloadDir  string            `json:"download_dir,omitempty"`
+	TempDir      string            `json:"temp_dir,omitempty"`
+	Headers      map[string]string `json:"headers,omitempty"`
+	FolderTarget string            `json:"folder_target,omitempty"`
+	AudioTarget  *AudioTarget      `json:"audio_target,omitempty"`
 }
 
 // saveTasks 把所有任务快照写盘（原子写：tmp + rename）。
@@ -909,6 +1092,11 @@ func (m *TaskManager) saveTasks() {
 			CfgFingerprint: t.cfg.Fingerprint,
 			CfgReferer:     t.cfg.Referer,
 			CfgUserAgent:   t.cfg.UserAgent,
+			DownloadDir:    t.DownloadDir,
+			TempDir:        t.TempDir,
+			Headers:        t.Headers,
+			FolderTarget:   t.FolderTarget,
+			AudioTarget:    t.AudioTarget,
 		})
 	}
 	dbPath := m.dbPath
@@ -952,6 +1140,9 @@ func (m *TaskManager) LoadTasks() {
 			ID: r.ID, Name: r.Name, URL: r.URL, Status: r.Status,
 			Log: r.Log, cmd: r.Cmd, OutputFile: r.OutputFile,
 			CreatedAt: r.CreatedAt,
+			DownloadDir: r.DownloadDir, TempDir: r.TempDir,
+			Headers: r.Headers, FolderTarget: r.FolderTarget,
+			AudioTarget: r.AudioTarget,
 		}
 		// 重建 cfg（用于恢复/强合）
 		t.cfg = downloader.DefaultConfig()
