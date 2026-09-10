@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -246,6 +247,11 @@ func (m *TaskManager) runTask(t *Task) {
 	t.dl.OnHandshakeFails = func() {
 		m.Pause(t.ID)
 	}
+	// 主动掐检测：不再自动暂停（一个慢分片拖死整集太重），
+	// 只在 downloader 内部把 abuseFails 置位，让后续分片 timeout 翻倍到 120s，
+	// 给 CDN 一个"等流量过去"的窗口。任务继续跑，最终成功最好，
+	// 真不行也会 retry 耗尽后正常失败，前端可手动暂停。
+	t.dl.OnAbuseDetected = nil
 	m.mu.Unlock()
 
 	// 执行下载
@@ -261,12 +267,14 @@ func (m *TaskManager) runTask(t *Task) {
 		// 不覆盖为失败——这样前端能正确显示"已暂停"和"恢复+强合"按钮
 		if t.Status == StatusPaused {
 			m.mu.Unlock()
-			m.saveTasks() // 持久化
+			m.logSegDurationSummary(t, dl) // 输出耗时分布，方便判断"主动掐 vs 慢网"
+			m.saveTasks()                  // 持久化
 			return
 		}
 		t.Status = StatusFailed
 		t.Log = fmt.Sprintf("❌ %v  末尾输出: %s", err, lastNote(dl))
 		m.mu.Unlock()
+		m.logSegDurationSummary(t, dl) // 失败时也输出耗时分布
 		// 失败时保留 temp_dir，方便点"强合"复用已下载分片
 		m.saveTasks() // 持久化：状态变更
 		return
@@ -277,11 +285,153 @@ func (m *TaskManager) runTask(t *Task) {
 		result.OutputFile, result.Segments, result.Failed, result.Duration.Truncate(time.Millisecond))
 	tempDir := t.cfg.TempDir
 	m.mu.Unlock()
+	m.logSegDurationSummary(t, dl) // 成功时也输出耗时分布
 	// 下载+合并均成功后清理 temp_dir（对齐 armv7l）
 	if tempDir != "" {
 		_ = os.RemoveAll(tempDir)
 	}
 	m.saveTasks() // 持久化：完成
+}
+
+// logSegDurationSummary 输出分片耗时分布摘要到指定 task 的 t.Log
+// 成功：总数/总耗时/平均速度/最快5/最慢5
+// 失败：总数/快速失败(<30s)占比/主要错误类型分布
+// 帮助区分"主动掐流量"（<30s 快速失败集中）和"自然慢网"（耗时走满 60s）
+// 注意：本函数内部自行加锁 m.mu，调用方必须未持有 m.mu，否则死锁
+func (m *TaskManager) logSegDurationSummary(t *Task, dl *downloader.Downloader) {
+	if t == nil || dl == nil {
+		return
+	}
+	success, failed := dl.SegDurations()
+	if len(success) == 0 && len(failed) == 0 {
+		return
+	}
+
+	var lines []string
+
+	// ---- 成功分片统计 ----
+	if len(success) > 0 {
+		var totalElapsed time.Duration
+		var totalBytes int64
+		for _, s := range success {
+			totalElapsed += s.Elapsed
+			totalBytes += s.Bytes
+		}
+		avgElapsed := totalElapsed / time.Duration(len(success))
+		var avgSpeed float64
+		if totalElapsed > 0 {
+			avgSpeed = float64(totalBytes) / totalElapsed.Seconds()
+		}
+
+		// 排序找最快/最慢各 5
+		sorted := make([]downloader.SegDurationSample, len(success))
+		copy(sorted, success)
+		sort.Slice(sorted, func(i, j int) bool { return sorted[i].Elapsed < sorted[j].Elapsed })
+
+		fastest := sorted[:min(5, len(sorted))]
+		slowest := sorted
+		if len(sorted) > 5 {
+			slowest = sorted[len(sorted)-5:]
+		}
+		lines = append(lines, fmt.Sprintf(
+			"[分片耗时摘要] 成功 %d 个 (总耗时 %s, 平均 %s/片, 平均速度 %s/s) | 最快: %s | 最慢: %s",
+			len(success),
+			totalElapsed.Truncate(time.Millisecond),
+			avgElapsed.Truncate(time.Millisecond),
+			formatBytes(int64(avgSpeed)),
+			formatSegList(fastest),
+			formatSegList(slowest),
+		))
+	}
+
+	// ---- 失败分片统计 ----
+	if len(failed) > 0 {
+		fastFails := 0
+		errCount := map[string]int{}
+		for _, f := range failed {
+			if f.Elapsed < 30*time.Second {
+				fastFails++
+			}
+			// 错误信息归一化：去掉具体数字（如 seg 编号、port、字节数）便于聚合
+			errCount[normalizeErr(f.Err)]++
+		}
+		// 取 Top 3 错误类型
+		type kv struct {
+			err string
+			n   int
+		}
+		var top []kv
+		for e, n := range errCount {
+			top = append(top, kv{e, n})
+		}
+		sort.Slice(top, func(i, j int) bool { return top[i].n > top[j].n })
+		if len(top) > 3 {
+			top = top[:3]
+		}
+		var topStrs []string
+		for _, k := range top {
+			topStrs = append(topStrs, fmt.Sprintf("%s(%d)", k.err, k.n))
+		}
+
+		// 主动掐判定：快速失败占比 > 70% 且至少 3 个失败样本
+		// 给出一行明确建议，让用户/前端日志区一眼看出是被掐了还是慢网
+		hint := ""
+		pct := fastFails * 100 / len(failed)
+		if len(failed) >= 3 && pct >= 70 {
+			hint = " ⚠️ 高度疑似主动掐流量"
+		} else if pct >= 50 {
+			hint = " (部分疑似主动掐)"
+		}
+
+		lines = append(lines, fmt.Sprintf(
+			"[失败分片] %d 个 (快速失败<30s: %d 个, %d%%)%s | 主要错误: %s",
+			len(failed), fastFails, pct, hint, strings.Join(topStrs, ", "),
+		))
+	}
+
+	if len(lines) == 0 {
+		return
+	}
+
+	// 追加到 t.Log（多行用 \n 拼接，前端日志区按行展示）
+	m.mu.Lock()
+	extra := strings.Join(lines, "\n")
+	if t.Log != "" && !strings.HasSuffix(t.Log, "\n") {
+		t.Log += "\n"
+	}
+	t.Log += extra
+	m.mu.Unlock()
+}
+
+// formatSegList 把 seg 列表格式化为 "seg10(0.3s), seg25(0.5s), ..."
+func formatSegList(samples []downloader.SegDurationSample) string {
+	parts := make([]string, 0, len(samples))
+	for _, s := range samples {
+		parts = append(parts, fmt.Sprintf("seg%d(%s)", s.SegIndex, s.Elapsed.Truncate(time.Millisecond)))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// normalizeErr 归一化错误信息，去掉易变部分（seg 编号、port、地址等）
+// 让相似的错误能聚合到一起，而不是被具体数字打散
+func normalizeErr(s string) string {
+	if s == "" {
+		return ""
+	}
+	// 截断到第一个 ":" 前（通常是 "context deadline exceeded" 这种）
+	if i := strings.Index(s, ":"); i > 0 && i < 60 {
+		return strings.TrimSpace(s[:i])
+	}
+	// 截断到第一个 "(" 或 "[" 前
+	for _, sep := range []string{"(", "["} {
+		if i := strings.Index(s, sep); i > 0 && i < 80 {
+			return strings.TrimSpace(s[:i])
+		}
+	}
+	if len(s) > 60 {
+		return s[:60] + "..."
+	}
+	return s
 }
 
 // lastNote 返回下载器最近一条进度备注

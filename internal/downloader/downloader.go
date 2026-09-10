@@ -92,6 +92,18 @@ type Downloader struct {
 	// OnHandshakeFails 由 TaskManager 注入的回调：握手失败到阈值时触发暂停
 	OnHandshakeFails func()
 
+	// 主动掐检测：单次重试轮里出现"连续 3 次 < 30s 快速失败"，判定 CDN 在主动掐流量
+	// （区别于自然慢速 timeout——自然 timeout 恰好 60s 触发）。置位后让后续分片 timeout 翻倍。
+	abuseFails int32
+	// OnAbuseDetected 可选回调：检测到主动掐时由 TaskManager 注入（默认 nil，不暂停）。
+	// 不再自动暂停——一个慢分片拖死整集太重，改为只延长 timeout。
+	OnAbuseDetected func()
+
+	// 已下分片耗时跟踪：用于输出 seg 耗时分布日志（诊断主动掐/慢分片）
+	segDurMu  sync.Mutex
+	segDurs   []segDuration // 成功的分片耗时
+	segFailed []segDuration // 失败的分片耗时 + 错误
+
 	// 进度快照（原子读写，供 Web 端轮询）
 	progress   Progress
 	progressMu sync.RWMutex
@@ -110,6 +122,27 @@ type speedSample struct {
 	at    time.Time
 	bytes int64
 }
+
+// segDuration 单分片耗时样本（成功/失败共用）
+type segDuration struct {
+	segIndex int
+	elapsed  time.Duration
+	bytes    int64
+	err      string // 失败时为错误信息，成功时为空
+}
+
+// 主动掐检测阈值
+const (
+	// 单次 HTTP 尝试 < 30s 算"快速失败"。自然慢 timeout 恰好走满 cfg.Timeout
+	// （默认 60s），主动掐通常 < 30s 就 RST/断开。
+	abuseFastFailThreshold = 30 * time.Second
+	// 一次重试轮里"连续 N 次都快速失败"才告警。1-2 次可能是网络抖动，
+	// 3 次连续基本就是被针对了。
+	abuseConsecThreshold = int32(3)
+	// 检测到主动掐后单分片 timeout 翻倍（60→120→240s），给 CDN 一个"等流量过去"的窗口。
+	// 封顶 300s 防止把单分片拖到 5 分钟。
+	abuseTimeoutCap = 300 * time.Second
+)
 
 // recordSpeed 记录一个分片完成事件，返回当前下载速度（bytes/s）
 // 滑动窗口保留最近 30 秒的样本，过期自动清理
@@ -156,6 +189,27 @@ func humanBytes(n int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f%cB", float64(n)/float64(div), "KMGTPE"[exp])
+}
+
+// SegDurationSample 单分片耗时样本（导出给 TaskManager 输出耗时分布）
+type SegDurationSample struct {
+	SegIndex int
+	Elapsed  time.Duration
+	Bytes    int64
+	Err      string // 失败时为错误信息，成功时为空
+}
+
+// SegDurations 返回成功和失败的 seg 耗时样本（深拷贝避免外部修改内部状态）
+func (d *Downloader) SegDurations() (success, failed []SegDurationSample) {
+	d.segDurMu.Lock()
+	defer d.segDurMu.Unlock()
+	for _, s := range d.segDurs {
+		success = append(success, SegDurationSample{SegIndex: s.segIndex, Elapsed: s.elapsed, Bytes: s.bytes})
+	}
+	for _, s := range d.segFailed {
+		failed = append(failed, SegDurationSample{SegIndex: s.segIndex, Elapsed: s.elapsed, Bytes: s.bytes, Err: s.err})
+	}
+	return
 }
 
 // New 创建下载器
@@ -650,6 +704,9 @@ func extractVersion(s string) string {
 // doWithRetry 执行请求并按可重试错误退避重试
 // 注意：退避等待用 select 监听 ctx.Done()，确保用户暂停/取消任务时
 // 能立刻跳出 retry 循环，而不是继续把剩余次数重试完。
+//
+// 主动掐检测：单次尝试 < 30s 就报错视为"快速失败"（区别于自然慢 timeout），
+// 一次重试轮里连续 3 次都快速失败 → 触发 OnAbuseDetected 回调。
 func (d *Downloader) doWithRetry(req *http.Request) (io.ReadCloser, error) {
 	var lastErr error
 	backoff := d.cfg.RetryBackoff
@@ -657,28 +714,43 @@ func (d *Downloader) doWithRetry(req *http.Request) (io.ReadCloser, error) {
 		backoff = time.Second
 	}
 	ctx := req.Context()
+	var consecFastFails int32 // 本次重试轮里连续 < 30s 失败次数
 	for i := 0; i < d.cfg.RetryMax; i++ {
 		// 循环开头先检查 ctx，已被取消则立即退出，不再发起请求
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
+		attemptStart := time.Now()
 		resp, err := d.httpc.Do(req.Clone(ctx))
+		attemptElapsed := time.Since(attemptStart)
 		if err == nil {
 			if resp.StatusCode >= 200 && resp.StatusCode < 400 {
 				return resp.Body, nil
 			}
 			resp.Body.Close()
 			lastErr = fmt.Errorf("HTTP %d", resp.StatusCode)
+			// 4xx (除 429) 不重试。但也要计入"快速失败"——403/410 这种
+			// 通常是 CF 主动拒绝，会快速返回
 			if resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != 429 {
-				return nil, lastErr // 4xx 不重试（429 除外）
+				if attemptElapsed < abuseFastFailThreshold {
+					d.recordAbuseAttempt(&consecFastFails, attemptElapsed, lastErr)
+				}
+				return nil, lastErr
 			}
 		} else {
 			lastErr = err
-			// 请求失败若因 ctx 取消（用户暂停/取消），不再重试
+			// 请求失败若因 ctx 取消（用户暂停/取消），不再重试，也不算主动掐
 			if ctx.Err() != nil {
 				return nil, err
 			}
-			d.logger("retry %d/%d error: %v", i+1, d.cfg.RetryMax, err)
+			d.logger("retry %d/%d error: %v (耗时 %s)", i+1, d.cfg.RetryMax, err, attemptElapsed.Truncate(time.Millisecond))
+			// 单次 < 30s 失败计一次"快速失败"，连续 3 次触发主动掐检测
+			if attemptElapsed < abuseFastFailThreshold {
+				d.recordAbuseAttempt(&consecFastFails, attemptElapsed, err)
+			} else {
+				// 走满 timeout 是慢速失败，不算主动掐，重置连续计数
+				consecFastFails = 0
+			}
 		}
 		// 退避等待，可被 ctx 取消打断（替代 time.Sleep）
 		select {
@@ -692,6 +764,28 @@ func (d *Downloader) doWithRetry(req *http.Request) (io.ReadCloser, error) {
 		}
 	}
 	return nil, fmt.Errorf("after %d retries: %w", d.cfg.RetryMax, lastErr)
+}
+
+// recordAbuseAttempt 记录一次"快速失败"，连续达阈值时标记 abuseFails（让后续分片 timeout 翻倍）
+// 注意：只标记，不自动暂停——一个慢分片拖死整集太重。任务继续跑，
+// 后续分片 timeout 自动翻倍到 120s → 240s（封顶 300s），给 CDN 一个"等流量过去"的窗口。
+// 真不行也会 retry 耗尽后正常失败，前端可手动暂停。
+func (d *Downloader) recordAbuseAttempt(consec *int32, elapsed time.Duration, err error) {
+	*consec++
+	if *consec < abuseConsecThreshold {
+		return
+	}
+	// 第一次到阈值才置位，避免重复触发
+	if !atomic.CompareAndSwapInt32(&d.abuseFails, 0, 1) {
+		return
+	}
+	d.logger("[warn] 检测到疑似主动掐流量: 连续 %d 次 < %v 失败 (例: %v)，后续分片 timeout 自动翻倍",
+		*consec, abuseFastFailThreshold, err)
+	// OnAbuseDetected 保留为可选钩子（默认 nil）：若 TaskManager 注入
+	// 了回调可触发额外动作（如暂停）；未注入则只做 timeout 延长。
+	if d.OnAbuseDetected != nil {
+		d.OnAbuseDetected()
+	}
 }
 
 // downloadSegments 并发下载所有分片
@@ -798,12 +892,26 @@ func (d *Downloader) downloadSegments(ctx context.Context, p *m3u8.Playlist, key
 // downloadFile 下载单个分片到文件
 // IV 计算：fixedIV 非空则用 fixedIV；否则用 segIndex 作为 16 字节 IV 的低 8 字节（big-endian）。
 func (d *Downloader) downloadFile(ctx context.Context, segURL, outPath string, br *m3u8.ByteRange, key, fixedIV []byte, segIndex int) error {
+	segStart := time.Now()
+	// 主动掐后单分片 timeout 翻倍（60→120→240s），封顶 300s
+	// 触发条件：abuseFails 标志被置位（doWithRetry 检测到 3 次连续 < 30s 快速失败）
+	// 翻倍后给 CDN 一个"等流量过去"的窗口，再下不慢的分片就有机会过
+	segTimeout := d.cfg.Timeout
+	if atomic.LoadInt32(&d.abuseFails) > 0 {
+		segTimeout *= 2
+		if segTimeout > abuseTimeoutCap {
+			segTimeout = abuseTimeoutCap
+		}
+	}
+	segCtx, segCancel := context.WithTimeout(ctx, segTimeout)
+	defer segCancel()
+
 	// 请求间隔随机化：0-300ms 随机抖动，避免固定间隔批量请求
 	// 真实浏览器请求分片间隔不固定，CDN bot 检测会看请求时序模式
 	if jitter := time.Duration(rand.Intn(300)) * time.Millisecond; jitter > 0 {
 		select {
-		case <-ctx.Done():
-			return ctx.Err()
+		case <-segCtx.Done():
+			return segCtx.Err()
 		case <-time.After(jitter):
 		}
 	}
@@ -819,7 +927,7 @@ func (d *Downloader) downloadFile(ctx context.Context, segURL, outPath string, b
 	pf.Close()
 	defer os.Remove(partPath) // 无论成功失败都清理 .part（成功后 outPath 已写入）
 
-	req, err := http.NewRequestWithContext(ctx, "GET", segURL, nil)
+	req, err := http.NewRequestWithContext(segCtx, "GET", segURL, nil)
 	if err != nil {
 		return err
 	}
@@ -833,18 +941,21 @@ func (d *Downloader) downloadFile(ctx context.Context, segURL, outPath string, b
 	}
 	body, err := d.doWithRetry(req)
 	if err != nil {
+		d.recordSegDuration(segIndex, time.Since(segStart), 0, err)
 		return err
 	}
 	defer body.Close()
 
 	data, err := io.ReadAll(body)
 	if err != nil {
+		d.recordSegDuration(segIndex, time.Since(segStart), 0, err)
 		return err
 	}
 	if key != nil {
 		iv := computeIV(fixedIV, segIndex)
 		dec, err := aesDecrypt(data, key, iv)
 		if err != nil {
+			d.recordSegDuration(segIndex, time.Since(segStart), 0, err)
 			return err
 		}
 		data = dec
@@ -852,9 +963,30 @@ func (d *Downloader) downloadFile(ctx context.Context, segURL, outPath string, b
 	// 先写 .part 再 rename 为最终文件，确保 outPath 要么不存在要么完整
 	// 避免 WriteFile 中途被中断留下半截损坏文件被误判为已完成
 	if err := os.WriteFile(partPath, data, 0644); err != nil {
+		d.recordSegDuration(segIndex, time.Since(segStart), 0, err)
 		return err
 	}
-	return os.Rename(partPath, outPath)
+	if err := os.Rename(partPath, outPath); err != nil {
+		d.recordSegDuration(segIndex, time.Since(segStart), 0, err)
+		return err
+	}
+	d.recordSegDuration(segIndex, time.Since(segStart), int64(len(data)), nil)
+	return nil
+}
+
+// recordSegDuration 记录分片耗时（成功/失败均记录）
+func (d *Downloader) recordSegDuration(segIndex int, elapsed time.Duration, bytes int64, err error) {
+	sd := segDuration{segIndex: segIndex, elapsed: elapsed, bytes: bytes}
+	if err != nil {
+		sd.err = err.Error()
+	}
+	d.segDurMu.Lock()
+	if err != nil {
+		d.segFailed = append(d.segFailed, sd)
+	} else {
+		d.segDurs = append(d.segDurs, sd)
+	}
+	d.segDurMu.Unlock()
 }
 
 // computeIV 计算解密 IV
