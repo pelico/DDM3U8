@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1188,19 +1189,144 @@ func (d *Downloader) merge(ctx context.Context, p *m3u8.Playlist, output string)
 	}
 
 	// 4. ffmpeg concat 合并
+	// 加 -movflags +faststart：把 moov atom 移到文件头，支持边下边播
+	// 用 -nostats + -progress pipe:1 替代默认 stderr 刷屏，改为自己解析精简进度
 	cmd := exec.CommandContext(ctx, d.cfg.FFmpegPath,
 		"-y",
+		"-nostats",
+		"-progress", "pipe:1",
 		"-f", "concat",
 		"-safe", "0",
 		"-i", listPath,
 		"-c", "copy",
 		"-bsf:a", "aac_adtstoasc",
+		"-movflags", "+faststart",
 		output,
 	)
 	cmd.Dir = d.cfg.TempDir
-	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	return cmd.Run()
+
+	pr, pw := io.Pipe()
+	cmd.Stdout = pw
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	// 总时长来自 playlist（分片时长之和），用于算百分比
+	var totalDur float64
+	for i := range p.Segments {
+		totalDur += p.Segments[i].Duration
+	}
+	go d.concatMergeProgress(pr, totalDur)
+	err := cmd.Wait()
+	pw.Close()
+	pr.Close()
+	return err
+}
+
+// formatBytes 把字节数格式化成人类可读大小（kB/MB/GB）。
+func formatBytes(b int64) string {
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%dB", b)
+	}
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f%cB", float64(b)/float64(div), "KMGTPE"[exp])
+}
+
+// concatMergeProgress 解析 ffmpeg -progress pipe:1 输出（key=value 行），
+// 节流调用 logger 输出精简合并进度：size / bitrate / speed，若有总时长则显示百分比。
+// totalDur 是视频总时长（秒），<=0 表示未知（如强合场景），只显示绝对 time。
+func (d *Downloader) concatMergeProgress(pipe io.Reader, totalDur float64) {
+	scanner := bufio.NewScanner(pipe)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+
+	var outTimeUs int64
+	var size int64
+	var bitrate, speed string
+	lastLog := time.Time{}
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		key, val, ok := cutEqual(line)
+		if !ok {
+			continue
+		}
+		switch key {
+		case "out_time_us":
+			if n, err := strconv.ParseInt(val, 10, 64); err == nil {
+				outTimeUs = n
+			}
+		case "total_size":
+			if n, err := strconv.ParseInt(val, 10, 64); err == nil {
+				size = n
+			}
+		case "bitrate":
+			bitrate = val
+		case "speed":
+			speed = val
+		}
+		// 节流：>=800ms 刷一次，避免刷屏；progress=end 强制输出最后一行
+		if key != "progress" && time.Since(lastLog) < 800*time.Millisecond {
+			continue
+		}
+		lastLog = time.Now()
+		d.logger(mergeProgressLine(outTimeUs, totalDur, size, bitrate, speed))
+	}
+}
+
+// mergeProgressLine 组装合并进度日志。
+func mergeProgressLine(outTimeUs int64, totalDur float64, size int64, bitrate, speed string) string {
+	cur := float64(outTimeUs) / 1e6
+	now := fmtDuration(cur)
+	var buf strings.Builder
+	if totalDur > 0 {
+		pct := 0.0
+		if totalDur > 0 {
+			pct = cur / totalDur * 100
+			if pct > 100 {
+				pct = 100
+			}
+		}
+		buf.WriteString(fmt.Sprintf("合并中: %.1f%% (%s/%s)", pct, now, fmtDuration(totalDur)))
+	} else {
+		buf.WriteString(fmt.Sprintf("合并中: %s", now))
+	}
+	if size > 0 {
+		buf.WriteString(fmt.Sprintf(" | size=%s", formatBytes(size)))
+	}
+	if bitrate != "" {
+		buf.WriteString(fmt.Sprintf(" | bitrate=%s", bitrate))
+	}
+	if speed != "" {
+		buf.WriteString(fmt.Sprintf(" | speed=%s", speed))
+	}
+	return buf.String()
+}
+
+// fmtDuration 把秒转成 hh:mm:ss。
+func fmtDuration(sec float64) string {
+	s := int(sec)
+	h := s / 3600
+	m := (s % 3600) / 60
+	ss := s % 60
+	if h > 0 {
+		return fmt.Sprintf("%02d:%02d:%02d", h, m, ss)
+	}
+	return fmt.Sprintf("%02d:%02d", m, ss)
+}
+
+// cutEqual 按第一个 '=' 拆分 key/value。
+func cutEqual(s string) (string, string, bool) {
+	for i := 0; i < len(s); i++ {
+		if s[i] == '=' {
+			return s[:i], s[i+1:], true
+		}
+	}
+	return "", "", false
 }
 
 // MergeOnly 只执行合并步骤：扫描 tempDir 中的 .ts 分片文件（按文件名升序），
@@ -1251,20 +1377,32 @@ func (d *Downloader) MergeOnly(ctx context.Context, tempDir, output string) erro
 
 	cmd := exec.CommandContext(ctx, d.cfg.FFmpegPath,
 		"-y",
+		"-nostats",
+		"-progress", "pipe:1",
 		"-f", "concat",
 		"-safe", "0",
 		"-i", listPath,
 		"-c", "copy",
 		"-bsf:a", "aac_adtstoasc",
+		"-movflags", "+faststart",
 		output,
 	)
 	cmd.Dir = tempDir
 	// 捕获 ffmpeg stderr 到 buffer，合并后输出到 logger（避免 io.Pipe 无缓冲
 	// 导致 ffmpeg 写阻塞 + logger 回调抢 m.mu.Lock 时链式阻塞）
 	var stderrBuf bytes.Buffer
-	cmd.Stdout = nil
 	cmd.Stderr = io.MultiWriter(&stderrBuf, os.Stderr)
-	err = cmd.Run()
+
+	// 进度走 -progress pipe:1；强合没有 playlist，总时长未知，只显示 size/bitrate/speed
+	pr, pw := io.Pipe()
+	cmd.Stdout = pw
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	go d.concatMergeProgress(pr, 0)
+	err = cmd.Wait()
+	pw.Close()
+	pr.Close()
 	// 合并完成后输出 ffmpeg 日志（最后 20 行，避免过长）
 	lines := strings.Split(strings.TrimSpace(stderrBuf.String()), "\n")
 	start := 0
