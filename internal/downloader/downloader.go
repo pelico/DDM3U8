@@ -703,6 +703,12 @@ func (d *Downloader) downloadSegments(ctx context.Context, p *m3u8.Playlist, key
 	var firstErr error
 	var errMu sync.Mutex
 
+	// 派生 cancelCtx：第一个分片失败时立刻 cancel 所有 worker，
+	// 避免 timeout 后还在等其它 goroutine 自然失败的几十秒/上百秒。
+	// 这样 wg.Wait() 几乎立即返回，Run 也能快速把 firstErr 报给 task 层。
+	cancelCtx, cancelAll := context.WithCancel(ctx)
+	defer cancelAll()
+
 	// 预解析 IV：EXT-X-KEY IV 为 hex 时直接用，否则用分片序号兜底
 	var fixedIV []byte
 	if p.Encryption != nil && p.Encryption.IV != "" {
@@ -724,11 +730,13 @@ func (d *Downloader) downloadSegments(ctx context.Context, p *m3u8.Playlist, key
 			d.progressMu.Unlock()
 			return
 		}
-		if err := d.downloadFile(ctx, seg.URI, outPath, seg.ByteRange, key, fixedIV, seg.Index); err != nil {
+		if err := d.downloadFile(cancelCtx, seg.URI, outPath, seg.ByteRange, key, fixedIV, seg.Index); err != nil {
 			atomic.AddInt32(&d.failed, 1)
 			errMu.Lock()
 			if firstErr == nil {
 				firstErr = fmt.Errorf("seg %d: %w", seg.Index, err)
+				// 第一个分片失败时立即 cancel 所有 worker，让其它分片快速收手
+				cancelAll()
 			}
 			errMu.Unlock()
 			d.logger("seg %d 失败: %v", seg.Index, err)
