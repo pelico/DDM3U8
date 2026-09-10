@@ -812,6 +812,8 @@
                         case '已中断':
                         case '已取消':
                         case '错误':
+                        case '失败':
+                        case '任务错误':
                             if (t.cmd) {
                                 btns = `<div class="btn-group"><button class="btn btn-sm btn-main" data-task-id="${safeId}" onclick="manageTask(this.dataset.taskId,'resume')">恢复</button><button class="btn btn-sm btn-success" data-task-id="${safeId}" onclick="manageTask(this.dataset.taskId,'merge')">强合</button></div>`;
                             } else if (t.audio_target) {
@@ -819,7 +821,7 @@
                             } else {
                                 btns = `<button class="btn btn-sm btn-success" data-task-id="${safeId}" onclick="manageTask(this.dataset.taskId,'merge')">重试合并</button>`;
                             }
-                            statusClass = t.status === '已取消' ? 'status-error' : 'status-error';
+                            statusClass = (t.status === '已取消') ? 'status-error' : 'status-error';
                             break;
                         default:
                             statusClass = 'status-error';
