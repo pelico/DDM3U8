@@ -115,6 +115,8 @@
         .adv-panel { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 14px; padding-top: 14px; border-top: 1px dashed var(--border); }
         .adv-item { display: flex; flex-direction: column; }
         .adv-item.full { grid-column: 1 / -1; }
+        .adv-tri { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
+        .adv-tri .adv-item { min-width: 0; }
         .adv-label { font-size: 12px; font-weight: 600; color: var(--muted); margin: 0 0 6px; }
         /* 等高单行控件 */
         #advancedOptions input[type="text"], #advancedOptions input[type="number"], #advancedOptions select {
@@ -128,6 +130,7 @@
         }
         @media (max-width: 600px) {
             .adv-panel { grid-template-columns: 1fr; gap: 12px; }
+            .adv-tri { grid-template-columns: 1fr; }
         }
 
         /* ---------- 按钮 ---------- */
@@ -347,10 +350,11 @@
                 </button>
 
                 <div id="advancedOptions" class="adv-panel" style="display: none;">
-                    <div class="adv-item full">
+                    <div class="adv-tri">
+                    <div class="adv-item">
                         <label class="adv-label" for="presetSelect">浏览器档</label>
                         <select id="presetSelect">
-                            <option value="">— 选择浏览器档（自动填 UA + 指纹）—</option>
+                            <option value="">— 选择档位（自动填 UA+指纹）—</option>
                             <option value="android_edge">移动 Edge 133（Android）</option>
                             <option value="android_chrome">移动 Chrome 133（Android）</option>
                             <option value="win_chrome">桌面 Chrome 133（Win）</option>
@@ -359,18 +363,6 @@
                             <option value="mac_safari">macOS Safari 17.5</option>
                             <option value="firefox">Firefox 130（桌面）</option>
                         </select>
-                    </div>
-                    <div class="adv-item">
-                        <label class="adv-label" for="uaInput">User-Agent（选填）</label>
-                        <input type="text" name="user_agent" id="uaInput" placeholder="留空使用默认浏览器UA">
-                    </div>
-                    <div class="adv-item">
-                        <label class="adv-label" for="originInput">Origin（选填）</label>
-                        <input type="text" name="origin" id="originInput">
-                    </div>
-                    <div class="adv-item full">
-                        <label class="adv-label" for="cookieInput">Cookie（选填，可直接整段粘贴自动清洗）</label>
-                        <textarea class="input-full" name="cookie" id="cookieInput" rows="2" placeholder="cf_clearance=xxx; _cf_bm=yyy 或带 Cookie: 前缀 / Path / HttpOnly 均可"></textarea>
                     </div>
                     <div class="adv-item">
                         <label class="adv-label" for="concurrencyInput">并发数</label>
@@ -383,6 +375,19 @@
                             <option value="safari">safari</option>
                             <option value="firefox">firefox</option>
                         </select>
+                    </div>
+                </div>
+                    <div class="adv-item">
+                        <label class="adv-label" for="uaInput">User-Agent（选填）</label>
+                        <input type="text" name="user_agent" id="uaInput" placeholder="留空使用默认浏览器UA">
+                    </div>
+                    <div class="adv-item">
+                        <label class="adv-label" for="originInput">Origin（选填）</label>
+                        <input type="text" name="origin" id="originInput">
+                    </div>
+                    <div class="adv-item full">
+                        <label class="adv-label" for="cookieInput">Cookie（选填，可直接整段粘贴自动清洗）</label>
+                        <textarea class="input-full" name="cookie" id="cookieInput" rows="2" placeholder="cf_clearance=xxx; _cf_bm=yyy 或带 Cookie: 前缀 / Path / HttpOnly 均可"></textarea>
                     </div>
                     <div class="adv-item full">
                         <label class="adv-label" for="headersInput">自定义请求头（选填，每行 Key:Value）</label>
