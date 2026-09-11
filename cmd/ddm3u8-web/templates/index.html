@@ -1,208 +1,355 @@
 <!DOCTYPE html>
-<html>
+<html lang="zh-CN">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>DDM3U8 下载器</title>
     <style>
         :root {
-            --bg-start: #eef2ff;
-            --bg-end: #f8fafc;
+            --bg: #f5f7fa;
+            --surface: #ffffff;
+            --surface-2: #f8fafc;
+            --border: #e8ecf1;
+            --border-strong: #d8dee6;
             --primary: #4f46e5;
-            --primary-dark: #4338ca;
-            --success: #059669;
-            --warning: #d97706;
-            --danger: #dc2626;
-            --text: #111827;
+            --primary-hover: #4338ca;
+            --primary-soft: #eef2ff;
+            --text: #1f2430;
             --muted: #6b7280;
-            --border: #e5e7eb;
-            --surface: rgba(255, 255, 255, 0.92);
-            --shadow: 0 18px 50px rgba(15, 23, 42, 0.10);
+            --faint: #9ca3af;
+            --success: #059669;
+            --success-soft: #ecfdf5;
+            --warning: #d97706;
+            --warning-soft: #fffbeb;
+            --danger: #dc2626;
+            --danger-soft: #fef2f2;
+            --merge: #7c3aed;
+            --merge-soft: #f5f3ff;
+            --radius: 14px;
+            --radius-sm: 10px;
+            --shadow: 0 1px 2px rgba(16,24,40,.04), 0 8px 24px rgba(16,24,40,.06);
+            --shadow-hover: 0 2px 4px rgba(16,24,40,.05), 0 14px 30px rgba(16,24,40,.08);
         }
         * { box-sizing: border-box; }
+        html, body { margin: 0; padding: 0; }
         body {
-            font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", "PingFang SC", "Helvetica Neue", Arial, sans-serif;
-            padding: 28px 18px;
+            font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+            background: var(--bg);
+            color: var(--text);
             min-height: 100vh;
-            color: var(--text);
-            margin: 0;
-            background:
-                radial-gradient(circle at 12% 12%, rgba(79, 70, 229, 0.18), transparent 30%),
-                radial-gradient(circle at 88% 8%, rgba(14, 165, 233, 0.16), transparent 28%),
-                linear-gradient(135deg, var(--bg-start) 0%, var(--bg-end) 58%, #ecfeff 100%);
-            letter-spacing: -0.01em;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
         }
-        .container { max-width: 960px; margin: 0 auto; }
-        .logo-section { text-align: center; margin-bottom: 28px; }
-        .logo-title { font-size: 31px; font-weight: 800; color: #172554; text-shadow: 0 1px 0 rgba(255,255,255,0.6); display: flex; align-items: center; justify-content: center; gap: 12px; }
-        .logo-icon { font-size: 34px; filter: drop-shadow(0 8px 14px rgba(79, 70, 229, 0.25)); }
-        .logo-subtitle { margin-top: 8px; font-size: 13px; color: #64748b; }
-        .card { background: var(--surface); backdrop-filter: blur(16px); padding: 24px; border-radius: 18px; margin-bottom: 18px; border: 1px solid rgba(255,255,255,0.72); box-shadow: var(--shadow); transition: transform 0.18s ease, box-shadow 0.18s ease; }
-        .card:hover { transform: translateY(-1px); box-shadow: 0 22px 60px rgba(15, 23, 42, 0.13); }
-        .card-header { display: flex; justify-content: space-between; align-items: center; gap: 14px; margin-bottom: 18px; padding-bottom: 14px; border-bottom: 1px solid rgba(226,232,240,0.9); }
-        h2 { margin: 0 0 16px 0; font-size: 18px; font-weight: 750; color: #0f172a; }
-        h3 { margin: 0 0 16px 0; font-size: 16px; font-weight: 720; color: #1e293b; }
-        .input-group { display: flex; gap: 12px; margin-bottom: 12px; }
-        .input-group input, .input-full {
-            width: 100%;
-            padding: 13px 15px;
+        .container { max-width: 880px; margin: 0 auto; padding: 22px 18px 64px; }
+
+        /* ---------- 顶部条 ---------- */
+        .topbar {
+            display: flex; align-items: center; justify-content: space-between; gap: 12px;
+            padding: 20px 4px 22px;
+        }
+        .brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+        .brand-logo {
+            width: 38px; height: 38px; flex-shrink: 0;
+            display: grid; place-items: center;
+            background: linear-gradient(135deg, #6366f1, #4f46e5);
+            border-radius: 11px;
+            color: #fff;
+            box-shadow: 0 6px 14px rgba(79,70,229,.28);
+        }
+        .brand-logo svg { width: 20px; height: 20px; }
+        .brand-text { min-width: 0; }
+        .brand-title { font-size: 17px; font-weight: 700; letter-spacing: -.01em; line-height: 1.2; }
+        .brand-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+        /* ---------- 卡片 ---------- */
+        .card {
+            background: var(--surface);
             border: 1px solid var(--border);
-            border-radius: 12px;
-            font-size: 14px;
-            line-height: 1.45;
-            outline: none;
-            background: rgba(248, 250, 252, 0.92);
-            color: var(--text);
-            transition: border-color 0.18s, box-shadow 0.18s, background 0.18s;
+            border-radius: var(--radius);
+            padding: 20px;
+            margin-bottom: 16px;
+            box-shadow: var(--shadow);
         }
-        .input-group input { flex: 1; }
-        .input-full { margin-bottom: 14px; }
-        .input-group input:focus, .input-full:focus { border-color: #818cf8; box-shadow: 0 0 0 4px rgba(79, 70, 229, 0.12); background: #fff; }
-        .input-group input::placeholder, .input-full::placeholder { color: #94a3b8; }
-        .btn { padding: 11px 18px; border: none; border-radius: 10px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.2s ease; display: inline-flex; align-items: center; justify-content: center; gap: 6px; white-space: nowrap; }
-        .btn:hover { transform: translateY(-1px); }
+        .card-header {
+            display: flex; align-items: center; justify-content: space-between; gap: 12px;
+            margin-bottom: 16px; padding-bottom: 14px; border-bottom: 1px solid var(--border);
+        }
+        .card-title {
+            display: flex; align-items: center; gap: 9px;
+            font-size: 15px; font-weight: 650; color: var(--text); margin: 0;
+        }
+        .card-title .ico { color: var(--primary); display: grid; place-items: center; }
+        .card-title .ico svg { width: 16px; height: 16px; }
+
+        /* ---------- 表单 ---------- */
+        .field-label { display: block; font-size: 12.5px; font-weight: 600; color: var(--muted); margin: 0 0 6px; }
+        textarea.input-full, input.input-full, input[type="text"],
+        input[type="number"], select {
+            width: 100%;
+            padding: 11px 13px;
+            border: 1px solid var(--border-strong);
+            border-radius: var(--radius-sm);
+            font-size: 14px;
+            line-height: 1.5;
+            outline: none;
+            background: var(--surface);
+            color: var(--text);
+            font-family: inherit;
+            transition: border-color .15s, box-shadow .15s, background .15s;
+        }
+        textarea.input-full { resize: vertical; }
+        textarea.input-full:focus, input.input-full:focus, input[type="text"]:focus,
+        input[type="number"]:focus, select:focus {
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(79,70,229,.12);
+        }
+        textarea.input-full::placeholder, input.input-full::placeholder, input[type="text"]::placeholder { color: var(--faint); }
+        .field { margin-bottom: 12px; }
+        .field-row { display: flex; gap: 10px; flex-wrap: wrap; }
+        .field-row .grow { flex: 1; min-width: 140px; }
+        .field-hint { font-size: 12.5px; color: var(--muted); margin: 10px 0 0; line-height: 1.7; }
+        .field-hint svg { width: 13px; height: 13px; vertical-align: -2px; color: var(--primary); }
+        .form-actions { display: flex; gap: 10px; margin-top: 16px; }
+
+        /* ---------- 高级选项：统一网格 + 等高控件 ---------- */
+        .adv-panel { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 14px; padding-top: 14px; border-top: 1px dashed var(--border); }
+        .adv-item { display: flex; flex-direction: column; }
+        .adv-item.full { grid-column: 1 / -1; }
+        .adv-label { font-size: 12px; font-weight: 600; color: var(--muted); margin: 0 0 6px; }
+        /* 等高单行控件 */
+        #advancedOptions input[type="text"], #advancedOptions input[type="number"], #advancedOptions select {
+            height: 40px; padding: 0 12px; box-sizing: border-box;
+        }
+        .hint-box {
+            grid-column: 1 / -1;
+            background: var(--surface-2); border: 1px solid var(--border);
+            border-radius: var(--radius-sm); padding: 10px 12px;
+            font-size: 12.5px; color: var(--muted); line-height: 1.8;
+        }
+        @media (max-width: 600px) {
+            .adv-panel { grid-template-columns: 1fr; gap: 12px; }
+        }
+
+        /* ---------- 按钮 ---------- */
+        .btn {
+            padding: 11px 16px;
+            border: 1px solid transparent;
+            border-radius: var(--radius-sm);
+            font-size: 14px; font-weight: 600;
+            cursor: pointer;
+            display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+            white-space: nowrap;
+            transition: background .15s, border-color .15s, color .15s, box-shadow .15s, transform .05s;
+            font-family: inherit;
+        }
         .btn:active { transform: translateY(0); }
-        .btn:disabled { cursor: not-allowed; opacity: 0.5; transform: none; }
-        .btn-main { background: #4f46e5; color: white; }
-        .btn-main:hover { background: #4338ca; }
-        .btn-success { background: #10b981; color: white; }
-        .btn-success:hover { background: #059669; }
-        .btn-warning { background: #f59e0b; color: white; }
-        .btn-warning:hover { background: #d97706; }
-        .btn-danger { background: #ef4444; color: white; }
-        .btn-danger:hover { background: #dc2626; }
-        .btn-secondary { background: transparent; color: #64748b; border: 1px solid #e2e8f0; }
-        .btn-secondary:hover { background: #f8fafc; border-color: #cbd5e1; color: #334155; }
-        .btn-ghost { background: rgba(79, 70, 229, 0.06); color: #4f46e5; border: 1px dashed #c7d2fe; }
-        .btn-ghost:hover { background: rgba(79, 70, 229, 0.12); border-color: #a5b4fc; }
-        .btn-sm { padding: 6px 10px; font-size: 12px; border-radius: 8px; }
-        .btn-group { display: flex; gap: 8px; flex-wrap: wrap; }
-        .table-container { overflow-x: auto; border-radius: 14px; border: 1px solid #edf2f7; background: white; }
+        .btn:disabled { cursor: not-allowed; opacity: .5; }
+        .btn-main { background: var(--primary); color: #fff; }
+        .btn-main:hover:not(:disabled) { background: var(--primary-hover); box-shadow: 0 4px 12px rgba(79,70,229,.25); }
+        .btn-success { background: var(--success); color: #fff; }
+        .btn-success:hover:not(:disabled) { background: #047857; }
+        .btn-warning { background: var(--warning); color: #fff; }
+        .btn-warning:hover:not(:disabled) { background: #b45309; }
+        .btn-danger { background: var(--danger); color: #fff; }
+        .btn-danger:hover:not(:disabled) { background: #b91c1c; }
+        .btn-ghost { background: var(--primary-soft); color: var(--primary); border-color: transparent; }
+        .btn-ghost:hover:not(:disabled) { background: #e2e7ff; }
+        .btn-secondary { background: var(--surface); color: var(--muted); border-color: var(--border-strong); }
+        .btn-secondary:hover:not(:disabled) { background: var(--surface-2); color: var(--text); border-color: var(--border); }
+        .btn-sm { padding: 7px 11px; font-size: 12.5px; border-radius: 8px; gap: 5px; }
+        .btn-full { width: 100%; }
+        .btn-group { display: flex; gap: 7px; flex-wrap: wrap; }
+
+        /* ---------- 工具操作区 ---------- */
+        .tools-block { margin-top: 4px; }
+        .tools-head { display: flex; align-items: center; gap: 12px; margin: 8px 2px 12px; }
+        .tools-head .label { font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); }
+        .tools-head::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+        .tools { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+        @media (max-width: 720px) { .tools { grid-template-columns: 1fr; } }
+        .tool-title { display: flex; align-items: center; gap: 9px; font-size: 14px; font-weight: 640; margin: 0 0 6px; color: var(--text); }
+        .tool-title .ico { color: var(--primary); }
+        .tool-title .ico svg { width: 15px; height: 15px; }
+        .tool-desc { font-size: 12.5px; color: var(--muted); margin: 0 0 12px; line-height: 1.6; }
+        .tool-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+        /* ---------- 任务列表 ---------- */
+        .table-container { overflow-x: auto; }
         table { width: 100%; border-collapse: collapse; }
-        th { text-align: left; background: #f8fafc; padding: 13px 12px; font-size: 12px; color: #64748b; font-weight: 750; border-bottom: 1px solid #e2e8f0; }
-        td { padding: 14px 12px; border-bottom: 1px solid #f1f5f9; font-size: 14px; vertical-align: middle; color: #1f2937; }
-        tr:last-child td { border-bottom: none; }
-        tr:hover td { background: #f8fafc; }
-        .status-action-col { width: 180px; }
-        .select-col { width: 42px; }
-        .progress-col { width: 400px; }
-        .name-cell { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        th {
+            text-align: left; font-size: 11.5px; font-weight: 600; color: var(--faint);
+            text-transform: uppercase; letter-spacing: .04em;
+            padding: 6px 10px; border-bottom: 1px solid var(--border);
+        }
+        td { padding: 13px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; font-size: 13.5px; }
+        tbody tr:last-child td { border-bottom: none; }
+        tbody tr { transition: background .12s; }
+        tbody tr:hover td { background: var(--surface-2); }
+        .select-col { width: 34px; }
+        .progress-col { width: 330px; min-width: 240px; }
+        .status-action-col { width: 210px; }
+        .name-cell { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .checkbox { width: 16px; height: 16px; cursor: pointer; accent-color: var(--primary); }
         .status-action-cell { vertical-align: middle; }
         .status-action-wrapper { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
-        .checkbox { width: 17px; height: 17px; cursor: pointer; accent-color: var(--primary); transition: transform 0.18s; }
-        .checkbox:hover { transform: scale(1.08); }
-        .progress-bar { height: 7px; background: #e2e8f0; border-radius: 999px; overflow: hidden; margin-top: 6px; }
-        .progress-fill { height: 100%; background: linear-gradient(90deg, #4f46e5 0%, #06b6d4 100%); border-radius: 999px; transition: width 0.3s ease; }
-        .progress-text { font-family: "Cascadia Mono", "SF Mono", Consolas, monospace; font-size: 12px; color: #64748b; margin-top: 6px; line-height: 1.45; word-break: break-all; }
-        .status { display: inline-flex; align-items: center; padding: 5px 10px; border-radius: 999px; font-size: 12px; font-weight: 750; line-height: 1; border: 1px solid transparent; }
-        .status-running { background: #eff6ff; color: #1d4ed8; border-color: #bfdbfe; }
-        .status-pending { background: #fffbeb; color: #b45309; border-color: #fde68a; }
-        .status-done { background: #ecfdf5; color: #047857; border-color: #a7f3d0; }
-        .status-error { background: #fef2f2; color: #b91c1c; border-color: #fecaca; }
-        .status-merge { background: #f5f3ff; color: #6d28d9; border-color: #ddd6fe; }
-        .status-warn { background: #fff7ed; color: #c2410c; border-color: #fed7aa; }
-        .status-waiting { background: #eef2ff; color: #3730a3; border-color: #c7d2fe; }
-        .empty-state { text-align: center; padding: 44px 20px; color: #94a3b8; }
-        .empty-icon { font-size: 44px; margin-bottom: 10px; opacity: 0.55; }
-        .batch-bar { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 13px 14px; background: #f8fafc; border-radius: 14px; margin-bottom: 14px; border: 1px solid #e2e8f0; }
-        .batch-info { font-size: 13px; color: #475569; display: flex; align-items: center; gap: 16px; }
+
+        .status {
+            display: inline-flex; align-items: center; gap: 6px;
+            font-size: 12px; font-weight: 600; line-height: 1;
+            padding: 5px 10px; border-radius: 999px;
+        }
+        .status::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+        .status-running { background: var(--primary-soft); color: var(--primary); }
+        .status-running::before { animation: pulse 1.4s ease-in-out infinite; }
+        .status-pending { background: var(--warning-soft); color: var(--warning); }
+        .status-merge { background: var(--merge-soft); color: var(--merge); }
+        .status-merge::before { animation: pulse 1.4s ease-in-out infinite; }
+        .status-done { background: var(--success-soft); color: var(--success); }
+        .status-warn { background: var(--warning-soft); color: #b45309; }
+        .status-error { background: var(--danger-soft); color: var(--danger); }
+        .status-waiting { background: var(--surface-2); color: var(--muted); }
+        @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+
+        .progress-bar { height: 6px; background: #eef0f4; border-radius: 999px; overflow: hidden; margin-top: 8px; }
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--primary), #06b6d4);
+            border-radius: 999px;
+            transition: width .35s ease;
+        }
+        .progress-text {
+            font-family: "Cascadia Mono", "SF Mono", Consolas, monospace;
+            font-size: 11.5px; color: var(--muted); margin-top: 7px; line-height: 1.5; word-break: break-all;
+        }
+
+        .empty-state { text-align: center; padding: 46px 20px; color: var(--faint); font-size: 13.5px; }
+        .empty-icon { display: grid; place-items: center; width: 46px; height: 46px; margin: 0 auto 12px; border-radius: 12px; background: var(--surface-2); color: var(--faint); }
+        .empty-icon svg { width: 22px; height: 22px; }
+
+        .batch-bar {
+            display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap;
+            padding: 12px 14px; background: var(--surface-2); border: 1px solid var(--border);
+            border-radius: var(--radius-sm); margin-bottom: 14px;
+        }
+        .batch-info { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 14px; }
         .batch-actions { display: flex; gap: 8px; flex-wrap: wrap; }
-        .tool-card { background: linear-gradient(135deg, rgba(255,251,235,0.96) 0%, rgba(240,253,250,0.94) 100%); border: 1px solid #fde68a; }
-        .tool-card h3 { color: #92400e; }
-        .tool-card p { font-size: 13px; color: #a16207; }
-        .modal { display: none; position: fixed; z-index: 999; inset: 0; background-color: rgba(15, 23, 42, 0.42); backdrop-filter: blur(4px); }
-        .modal-content { background-color: #fff; margin: 10% auto; padding: 22px; border-radius: 18px; width: 88%; max-width: 470px; max-height: 70vh; overflow-y: auto; box-shadow: 0 24px 70px rgba(15, 23, 42, 0.24); }
-        .folder-item { padding: 12px 14px; border-bottom: 1px solid #f1f5f9; cursor: pointer; font-size: 13px; border-radius: 10px; color: #334155; }
-        .folder-item:hover { background-color: #ecfdf5; color: #047857; }
-        .close-btn { color: #94a3b8; float: right; font-size: 22px; font-weight: bold; cursor: pointer; line-height: 1; }
-        .close-btn:hover { color: #1f2937; }
-        #folderSelectBtn { background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 12px; padding: 12px 14px; color: #334155; font-size: 13px; width: 100%; cursor: pointer; text-align: left; transition: border-color 0.18s, background 0.18s; }
-        #folderSelectBtn:hover { background: #fff; border-color: #94a3b8; }
-        .toast-container { position: fixed; top: 20px; right: 20px; z-index: 9999; display: flex; flex-direction: column; gap: 10px; }
-        .toast { padding: 14px 18px; border-radius: 12px; font-size: 14px; font-weight: 500; display: flex; align-items: center; gap: 8px; box-shadow: 0 10px 40px rgba(15, 23, 42, 0.15); backdrop-filter: blur(12px); animation: toastIn 0.3s ease-out; min-width: 260px; }
-        .toast-success { background: linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%); color: #047857; border: 1px solid #a7f3d0; }
-        .toast-error { background: linear-gradient(135deg, #fef2f2 0%, #fee2e2 100%); color: #b91c1c; border: 1px solid #fecaca; }
-        .toast-info { background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%); color: #1d4ed8; border: 1px solid #bfdbfe; }
-        .toast-warning { background: linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%); color: #b45309; border: 1px solid #fde68a; }
-        @keyframes toastIn { from { opacity: 0; transform: translateX(100px); } to { opacity: 1; transform: translateX(0); } }
-        @keyframes toastOut { from { opacity: 1; transform: translateX(0); } to { opacity: 0; transform: translateX(100px); } }
-        .video-file-item { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-bottom: 1px solid #f1f5f9; cursor: pointer; transition: background 0.15s; font-size: 13px; color: #334155; }
+
+        .worker-status {
+            display: inline-flex; align-items: center; gap: 7px;
+            font-size: 12px; color: var(--muted);
+            background: var(--surface); border: 1px solid var(--border);
+            padding: 6px 12px; border-radius: 999px;
+        }
+        .worker-status .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--success); }
+
+        /* ---------- 选择文件夹 / 视频列表 ---------- */
+        #folderSelectBtn { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+        .modal { display: none; position: fixed; z-index: 999; inset: 0; background: rgba(17,24,39,.4); backdrop-filter: blur(3px); }
+        .modal-content { background: var(--surface); margin: 8% auto; padding: 20px; border-radius: var(--radius); width: 90%; max-width: 440px; max-height: 72vh; overflow-y: auto; box-shadow: 0 24px 60px rgba(17,24,39,.22); }
+        .folder-item { padding: 11px 13px; border-bottom: 1px solid var(--border); cursor: pointer; font-size: 13px; border-radius: 9px; color: var(--text); display: flex; align-items: center; gap: 9px; }
+        .folder-item svg { width: 15px; height: 15px; color: var(--muted); }
+        .folder-item:hover { background: var(--primary-soft); color: var(--primary); }
+        .folder-item:hover svg { color: var(--primary); }
+        .close-btn { color: var(--faint); float: right; font-size: 22px; font-weight: bold; cursor: pointer; line-height: 1; background: none; border: none; }
+        .close-btn:hover { color: var(--text); }
+
+        .video-file-item { display: flex; align-items: center; gap: 10px; padding: 9px 11px; border-bottom: 1px solid var(--border); cursor: pointer; transition: background .12s; font-size: 13px; color: var(--text); }
         .video-file-item:last-child { border-bottom: none; }
-        .video-file-item:hover { background: #f0f4ff; }
-        .video-file-item.selected { background: #eef2ff; }
+        .video-file-item:hover { background: var(--surface-2); }
+        .video-file-item.selected { background: var(--primary-soft); }
         .video-file-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .video-file-size { font-size: 11px; color: #94a3b8; white-space: nowrap; font-family: "Cascadia Mono", "SF Mono", Consolas, monospace; }
-        .video-file-path { font-size: 11px; color: #a0aec0; }
+        .video-file-size { font-size: 11px; color: var(--faint); white-space: nowrap; font-family: "Cascadia Mono", "SF Mono", Consolas, monospace; }
+        .video-file-path { font-size: 11px; color: var(--faint); }
+
+        /* ---------- Toast ---------- */
+        .toast-container { position: fixed; top: 18px; right: 18px; z-index: 9999; display: flex; flex-direction: column; gap: 9px; }
+        .toast { padding: 12px 16px; border-radius: var(--radius-sm); font-size: 13.5px; font-weight: 500; display: flex; align-items: center; gap: 9px; box-shadow: var(--shadow-hover); background: var(--surface); color: var(--text); border: 1px solid var(--border); min-width: 260px; max-width: 360px; animation: toastIn .25s ease-out; }
+        .toast-success { border-color: #a7f3d0; background: var(--success-soft); color: #047857; }
+        .toast-error { border-color: #fecaca; background: var(--danger-soft); color: var(--danger); }
+        .toast-info { border-color: #dbeafe; background: #eff6ff; color: #1d4ed8; }
+        .toast-warning { border-color: #fde68a; background: var(--warning-soft); color: #b45309; }
+        @keyframes toastIn { from { opacity: 0; transform: translateX(24px); } to { opacity: 1; transform: translateX(0); } }
+        @keyframes toastOut { from { opacity: 1; transform: translateX(0); } to { opacity: 0; transform: translateX(24px); } }
+
         @media (max-width: 600px) {
-            body { padding: 12px 10px; background: linear-gradient(135deg, #eef2ff 0%, #f8fafc 100%); }
-            .logo-title { font-size: 22px; }
-            .logo-subtitle { font-size: 11px; }
-            .card { padding: 14px; border-radius: 14px; margin-bottom: 12px; backdrop-filter: none; background: #ffffff; box-shadow: 0 4px 12px rgba(15, 23, 42, 0.06); }
-            .card-header { flex-wrap: wrap; margin-bottom: 10px; padding-bottom: 8px; gap: 6px; }
-            h2 { font-size: 16px; margin-bottom: 8px; }
-            h3 { font-size: 15px; margin-bottom: 0; white-space: nowrap; }
-            .input-full { padding: 10px 12px; margin-bottom: 10px; }
-            .input-group input { padding: 10px 12px; }
-            .input-group { margin-bottom: 10px; }
-            .btn { padding: 10px 14px; font-size: 13px; }
-            .btn-secondary { background: transparent; }
-            .input-group { flex-direction: column; }
+            .container { padding: 14px 12px 40px; }
+            .topbar { padding: 16px 2px 18px; }
+            .brand-title { font-size: 16px; }
+            .card { padding: 16px; border-radius: 12px; margin-bottom: 12px; }
+            .card-header { margin-bottom: 12px; padding-bottom: 12px; }
+            .field-row { flex-direction: column; gap: 12px; }
+            .btn { padding: 10px 14px; font-size: 13.5px; }
             thead { display: none; }
-            tr { display: block; border: 1px solid #e2e8f0; padding: 12px; margin-bottom: 10px; border-radius: 14px; background: #fafafa; position: relative; }
+            tr { display: block; border: 1px solid var(--border); padding: 12px; margin-bottom: 10px; border-radius: 12px; background: var(--surface); position: relative; }
             td { display: block; border: none; padding: 0; }
             td:nth-child(1) { position: absolute; top: 12px; right: 12px; }
-            td:nth-child(2) { font-weight: 700; font-size: 15px; color: #0f172a; padding-right: 28px; margin-bottom: 8px; }
+            td:nth-child(2) { font-weight: 650; font-size: 14px; color: var(--text); padding-right: 26px; margin-bottom: 8px; }
             td:nth-child(3) { margin-bottom: 8px; }
             td:nth-child(3) .status-action-wrapper { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
-            td:nth-child(4) { margin-bottom: 10px; }
-            tr::after { content: ""; display: table; clear: both; }
-            .select-col { width: auto; }
-            .progress-col { width: auto; }
-            .status-action-col { width: auto; }
-            .batch-bar { flex-direction: column; gap: 8px; padding: 10px 12px; margin-bottom: 10px; }
-            .batch-info { font-size: 12px; gap: 12px; }
-            .batch-actions { gap: 6px; }
-            .btn-sm { padding: 6px 10px; font-size: 12px; border-radius: 8px; }
-            .btn-group { gap: 6px; display: inline-flex; }
-            .status { padding: 4px 10px; font-size: 12px; }
-            .progress-bar { height: 6px; }
-            .progress-text { font-size: 11px; margin-top: 5px; line-height: 1.5; }
-            .checkbox { width: 16px; height: 16px; }
-            .table-container { border-radius: 12px; }
-            .tool-card p { font-size: 12px; }
-            #folderSelectBtn { padding: 10px 12px; font-size: 13px; }
-            .modal { backdrop-filter: none; }
-            .toast { backdrop-filter: none; }
+            td:nth-child(4) { margin-bottom: 8px; }
+            .select-col, .progress-col, .status-action-col { width: auto; }
+            .batch-bar { flex-direction: column; align-items: stretch; gap: 8px; }
+            .batch-info { font-size: 12px; gap: 10px; }
+            .progress-bar { height: 5px; }
+            .progress-text { font-size: 11px; }
         }
     </style>
 </head>
 <body>
     <div class="container">
-        <div class="logo-section">
-            <div class="logo-title">
-                <span class="logo-icon">📥</span>
-                <span>DDM3U8 下载器</span>
+
+        <!-- 顶部条 -->
+        <div class="topbar">
+            <div class="brand">
+                <div class="brand-logo">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                </div>
+                <div class="brand-text">
+                    <div class="brand-title">DDM3U8 下载器</div>
+                    <div class="brand-sub">任务队列 · 断点恢复 · 本地缓存合并</div>
+                </div>
             </div>
-            <div class="logo-subtitle">轻量任务队列 · 断点恢复 · 本地缓存合并</div>
+            <div id="workerStatus" class="worker-status"><span class="dot"></span>运行中: 0/3</div>
         </div>
-        
+
+        <!-- 添加下载 -->
         <div class="card">
-            <h2>添加下载任务</h2>
+            <div class="card-header">
+                <h2 class="card-title">
+                    <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><polyline points="8 12 12 16 16 12"/></svg></span>
+                    添加下载任务
+                </h2>
+            </div>
             <form id="downForm">
-                <textarea class="input-full" name="url" placeholder="粘贴 m3u8 链接，支持多个链接混合输入" required rows="3"></textarea>
-                <div class="input-group">
-                    <input type="text" name="name" placeholder="视频名称" value="video" required>
+                <div class="field">
+                    <label class="field-label" for="urlInput">m3u8 链接</label>
+                    <textarea class="input-full" id="urlInput" name="url" placeholder="粘贴 m3u8 链接，支持多个链接混合输入" required rows="3"></textarea>
                 </div>
-                <input type="text" class="input-full" name="referer" value="https://" placeholder="选填：全局 Referer">
-                <div style="margin: 10px 0;">
-                    <button type="button" id="toggleAdvanced" class="btn btn-ghost" style="width: 100%; font-size: 13px;">
-                        ⚙️ 高级选项（UA / 指纹 / 并发 / 自定义头）
-                    </button>
+                <div class="field-row">
+                    <div class="field grow">
+                        <label class="field-label" for="nameInput">视频名称</label>
+                        <input type="text" id="nameInput" name="name" value="video" required>
+                    </div>
+                    <div class="field grow">
+                        <label class="field-label" for="subPathInput">下载子目录（选填）</label>
+                        <input type="text" class="input-full" name="sub_path" id="subPathInput" placeholder="如 movie1">
+                    </div>
+                    <div class="field grow">
+                        <label class="field-label" for="refererInput">全局 Referer（选填）</label>
+                        <input type="text" id="refererInput" name="referer" value="https://">
+                    </div>
                 </div>
-                <div id="advancedOptions" style="display: none; margin-bottom: 10px;">
-                    <div class="input-group" style="margin-bottom: 8px; gap: 10px; align-items: center;">
-                        <label style="font-size: 13px; color: #4b5563; white-space: nowrap;">📋 浏览器档：</label>
-                        <select id="presetSelect" style="padding: 8px; border: 1px solid var(--border); border-radius: 8px; flex: 1;">
+
+                <button type="button" id="toggleAdvanced" class="btn btn-ghost btn-full" style="font-size: 13px;">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                    高级选项（UA / 指纹 / 并发 / 自定义头）
+                </button>
+
+                <div id="advancedOptions" class="adv-panel" style="display: none;">
+                    <div class="adv-item full">
+                        <label class="adv-label" for="presetSelect">浏览器档</label>
+                        <select id="presetSelect">
                             <option value="">— 选择浏览器档（自动填 UA + 指纹）—</option>
                             <option value="android_edge">移动 Edge 133（Android）</option>
                             <option value="android_chrome">移动 Chrome 133（Android）</option>
@@ -213,71 +360,63 @@
                             <option value="firefox">Firefox 130（桌面）</option>
                         </select>
                     </div>
-                    <input type="text" class="input-full" name="user_agent" placeholder="选填：User-Agent（留空使用默认浏览器UA）" style="margin-bottom: 8px;">
-                    <input type="text" class="input-full" name="origin" placeholder="选填：Origin" style="margin-bottom: 8px;">
-                    <textarea class="input-full" name="cookie" rows="2" placeholder="选填：Cookie（可直接整段粘贴，自动清洗）&#10;支持任意格式：&#10;cf_clearance=xxx; _cf_bm=yyy&#10;或带前缀 Cookie: cf_clearance=...; Path=/; HttpOnly 等" style="margin-bottom: 8px;"></textarea>
-                    <div class="input-group" style="margin-bottom: 8px; gap: 10px; align-items: center;">
-                        <label style="font-size: 13px; color: #4b5563; white-space: nowrap;">并发数：</label>
-                        <input type="number" name="concurrency" value="3" min="1" max="10" style="width: 70px; padding: 8px; border: 1px solid var(--border); border-radius: 8px;">
-                        <label style="font-size: 13px; color: #4b5563; white-space: nowrap; margin-left: 10px;">TLS指纹：</label>
-                        <select name="fingerprint" style="padding: 8px; border: 1px solid var(--border); border-radius: 8px; flex: 1;">
+                    <div class="adv-item">
+                        <label class="adv-label" for="uaInput">User-Agent（选填）</label>
+                        <input type="text" name="user_agent" id="uaInput" placeholder="留空使用默认浏览器UA">
+                    </div>
+                    <div class="adv-item">
+                        <label class="adv-label" for="originInput">Origin（选填）</label>
+                        <input type="text" name="origin" id="originInput">
+                    </div>
+                    <div class="adv-item full">
+                        <label class="adv-label" for="cookieInput">Cookie（选填，可直接整段粘贴自动清洗）</label>
+                        <textarea class="input-full" name="cookie" id="cookieInput" rows="2" placeholder="cf_clearance=xxx; _cf_bm=yyy 或带 Cookie: 前缀 / Path / HttpOnly 均可"></textarea>
+                    </div>
+                    <div class="adv-item">
+                        <label class="adv-label" for="concurrencyInput">并发数</label>
+                        <input type="number" id="concurrencyInput" name="concurrency" value="3" min="1" max="10">
+                    </div>
+                    <div class="adv-item">
+                        <label class="adv-label" for="fingerprintSelect">TLS 指纹</label>
+                        <select name="fingerprint" id="fingerprintSelect">
                             <option value="chrome">chrome（默认）</option>
                             <option value="safari">safari</option>
                             <option value="firefox">firefox</option>
                         </select>
                     </div>
-                    <textarea class="input-full" name="custom_headers" rows="2" placeholder="选填：自定义请求头，每行一个，格式 Key:Value&#10;例如：&#10;Sec-Fetch-Site: cross-site&#10;Sec-Fetch-Mode: cors"></textarea>
-                    <p style="font-size: 12px; color: #6b7280; margin: 8px 0 0 0; line-height: 1.6;">
-                        💡 <b>提示：</b><br>
-                        • 并发默认3避免触发风控，非限制资源可调到10<br>
-                        • UA 和 TLS指纹要匹配：移动端 Edge/Chrome、桌面 Chrome/Edge 都配 chrome 指纹，iOS/macOS Safari 配 safari，Firefox 配 firefox<br>
-                        • sec-ch-ua 系列会根据 UA 自动推导，无需手动填<br>
-                        • Cookie 可直接整段粘贴（含 Cookie: 前缀、Path/HttpOnly 等属性都会自动清洗，只保留 name=value）<br>
-                        • 所有字段填一次后会自动保存，下次打开页面自动恢复；点"🗑️ 清除"才清空<br>
-                        • 握手被RST时：①换TLS指纹 ②补完整Cookie ③换出口IP
-                    </p>
+                    <div class="adv-item full">
+                        <label class="adv-label" for="headersInput">自定义请求头（选填，每行 Key:Value）</label>
+                        <textarea class="input-full" name="custom_headers" id="headersInput" rows="2" placeholder="Sec-Fetch-Site: cross-site&#10;Sec-Fetch-Mode: cors"></textarea>
+                    </div>
+                    <div class="hint-box">
+                        • 并发默认 3 避免触发风控，非限制资源可调到 10<br>
+                        • UA 与 TLS 指纹需匹配：移动/桌面 Chrome/Edge 配 chrome，iOS/macOS Safari 配 safari，Firefox 配 firefox<br>
+                        • sec-ch-ua 系列根据 UA 自动推导，无需手动填<br>
+                        • Cookie 可直接整段粘贴，自动清洗只留 name=value<br>
+                        • 左键点击"清除"按钮才清空已保存的字段
+                    </div>
                 </div>
-                <input type="text" class="input-full" name="sub_path" placeholder="选填：下载子目录（如 movie1）不填则存到根目录">
-                <div class="input-group" style="gap: 10px;">
-                    <button type="submit" class="btn btn-main" style="flex: 1;">开始下载</button>
-                    <button type="button" id="clearFormBtn" class="btn btn-ghost" title="清空所有表单字段（含高级选项）">🗑️ 清除</button>
+
+                <div class="form-actions">
+                    <button type="submit" class="btn btn-main" style="flex:1;">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:15px;height:15px;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                        开始下载
+                    </button>
+                    <button type="button" id="clearFormBtn" class="btn btn-secondary" title="清空所有表单字段（含高级选项）">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:15px;height:15px;"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                        清除
+                    </button>
                 </div>
             </form>
         </div>
 
-        <div class="card tool-card">
-            <h3>🛠️ 本地缓存合并工具</h3>
-            <form id="localMergeForm">
-                <input type="hidden" id="folderInputHidden" name="folder_name" required>
-                <button type="button" id="folderSelectBtn" onclick="openFolderModal()">📁 选择包含.ts缓存的文件夹</button>
-                <button type="submit" class="btn btn-success" style="width: 100%; margin-top: 10px;">🔍 扫描并合并</button>
-            </form>
-        </div>
-
-        <div class="card tool-card" style="border-color: #c7d2fe; background: linear-gradient(135deg, rgba(238,242,255,0.96) 0%, rgba(240,253,250,0.94) 100%);">
-            <h3 style="color: #3730a3;">🎵 音频提取工具</h3>
-            <p style="font-size: 13px; color: #4338ca; margin: 0 0 12px 0;">扫描下载目录中的视频文件，批量提取转换为 m4a 音频</p>
-            <div style="display: flex; gap: 8px; margin-bottom: 12px;">
-                <button type="button" class="btn btn-main" onclick="loadVideoFiles()" id="scanVideoBtn">📂 扫描视频文件</button>
-                <button type="button" class="btn btn-success" onclick="batchAudioExtract()" id="extractAudioBtn" disabled>🎵 提取选中音频</button>
-            </div>
-            <div id="videoFileList" style="display: none;">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-                    <label style="font-size: 13px; color: #475569; display: flex; align-items: center; gap: 6px;">
-                        <input type="checkbox" id="selectAllVideos" onchange="toggleSelectAllVideos()" class="checkbox"> 全选
-                    </label>
-                    <span id="selectedVideoCount" style="font-size: 12px; color: #6b7280;">已选择 0 个</span>
-                </div>
-                <div id="videoFileContainer" style="max-height: 300px; overflow-y: auto; border: 1px solid #e2e8f0; border-radius: 10px; background: white;"></div>
-            </div>
-        </div>
-
+        <!-- 任务列表 -->
         <div class="card">
             <div class="card-header">
-                <h3>📋 任务列表</h3>
-                <div style="display: flex; align-items: center; gap: 12px;">
-                    <span id="workerStatus" style="font-size: 12px; color: #6b7280;">运行中: 0/3</span>
-                </div>
+                <h3 class="card-title">
+                    <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/><polyline points="10 9 9 9 8 9"/></svg></span>
+                    任务列表
+                </h3>
             </div>
 
             <div id="batchBar" class="batch-bar" style="display: none;">
@@ -286,10 +425,10 @@
                     <span id="selectedCount">已选择 0 个</span>
                 </div>
                 <div class="batch-actions">
-                    <button class="btn btn-sm btn-main" onclick="batchResume()">▶ 恢复选中</button>
-                    <button class="btn btn-sm btn-warning" onclick="batchPause()">⏸ 暂停选中</button>
-                    <button class="btn btn-sm btn-danger" onclick="batchCancel()">✕ 取消选中</button>
-                    <button class="btn btn-sm btn-secondary" onclick="batchClear()">🗑 清理记录</button>
+                    <button class="btn btn-sm btn-main" onclick="batchResume()">恢复选中</button>
+                    <button class="btn btn-sm btn-warning" onclick="batchPause()">暂停选中</button>
+                    <button class="btn btn-sm btn-danger" onclick="batchCancel()">取消选中</button>
+                    <button class="btn btn-sm btn-secondary" onclick="batchClear()">清理记录</button>
                 </div>
             </div>
 
@@ -298,13 +437,61 @@
                     <thead>
                         <tr>
                             <th class="select-col"><input type="checkbox" id="headerCheckbox" onchange="toggleSelectAll()" class="checkbox"></th>
-                            <th>任务/文件名</th>
-                            <th class="status-action-col">状态/操作</th>
+                            <th>任务 / 文件名</th>
+                            <th class="status-action-col">状态 / 操作</th>
                             <th class="progress-col">进度</th>
                         </tr>
                     </thead>
                     <tbody id="taskList"></tbody>
                 </table>
+            </div>
+        </div>
+
+        <!-- FFmpeg 工具区：本地缓存合并 + 音频提取 -->
+        <div class="tools-block">
+            <div class="tools-head"><span class="label">FFmpeg 工具</span></div>
+            <div class="tools">
+                <div class="card">
+                    <h3 class="tool-title">
+                        <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 18 15 15"/></svg></span>
+                        本地缓存合并
+                    </h3>
+                    <form id="localMergeForm">
+                        <input type="hidden" id="folderInputHidden" name="folder_name" required>
+                        <p class="tool-desc">选择本地缓存文件夹，把中断任务下载的 .ts 分片合并为完整 mp4</p>
+                        <div class="tool-actions">
+                            <button type="button" id="folderSelectBtn" class="btn btn-secondary" style="flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" onclick="openFolderModal()">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:15px;height:15px;flex-shrink:0;"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+                                <span id="folderSelectBtnText" style="min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">选择缓存文件夹</span>
+                            </button>
+                            <button type="submit" class="btn btn-success" style="flex:1;">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:15px;height:15px;"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 18 15 15"/></svg>
+                                扫描并合并
+                            </button>
+                        </div>
+                    </form>
+                </div>
+
+                <div class="card">
+                    <h3 class="tool-title">
+                        <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V6l10-2v14"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg></span>
+                        音频提取
+                    </h3>
+                    <p class="tool-desc">扫描下载目录中的视频，批量转换为 m4a 音频</p>
+                    <div class="tool-actions" style="margin-bottom:12px;">
+                        <button type="button" class="btn btn-main" onclick="loadVideoFiles()" id="scanVideoBtn">扫描视频文件</button>
+                        <button type="button" class="btn btn-success" onclick="batchAudioExtract()" id="extractAudioBtn" disabled>提取选中音频</button>
+                    </div>
+                    <div id="videoFileList" style="display: none;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                            <label style="font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 6px;">
+                                <input type="checkbox" id="selectAllVideos" onchange="toggleSelectAllVideos()" class="checkbox"> 全选
+                            </label>
+                            <span id="selectedVideoCount" style="font-size: 12px; color: var(--faint);">已选择 0 个</span>
+                        </div>
+                        <div id="videoFileContainer" style="max-height: 300px; overflow-y: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2);"></div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -314,9 +501,9 @@
     <div id="folderModal" class="modal">
         <div class="modal-content">
             <span class="close-btn" onclick="closeFolderModal()">&times;</span>
-            <h3 style="margin-top:0; padding-bottom:12px; border-bottom:2px solid #f3f4f6;">📁 选择缓存文件夹</h3>
+            <h3 style="margin-top:0; padding-bottom:12px; border-bottom:1px solid var(--border); font-size:15px; font-weight:650;">选择缓存文件夹</h3>
             <div id="folderList" style="margin-top:12px;">
-                <div style="text-align:center; padding:20px; color:#9ca3af;">正在加载...</div>
+                <div style="text-align:center; padding:20px; color:var(--faint);">正在加载...</div>
             </div>
         </div>
     </div>
@@ -457,13 +644,14 @@
         };
 
         // 高级选项折叠
+        const gearSvg = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>';
         document.getElementById('toggleAdvanced').onclick = function() {
             const panel = document.getElementById('advancedOptions');
-            const shown = panel.style.display !== 'none';
-            panel.style.display = shown ? 'none' : 'block';
-            this.textContent = shown
-                ? '⚙️ 高级选项（UA / 指纹 / 并发 / 自定义头）'
-                : '⚙️ 收起高级选项';
+            const isOpen = panel.style.display === 'grid';
+            panel.style.display = isOpen ? 'none' : 'grid';
+            this.innerHTML = isOpen
+                ? gearSvg + '&nbsp; 高级选项（UA / 指纹 / 并发 / 自定义头）'
+                : gearSvg + '&nbsp; 收起高级选项';
         };
 
         // 浏览器档位预设：选了就自动填 UA + TLS指纹（Origin/Referer 保留你已填的）
@@ -553,7 +741,7 @@
             button.disabled = true;
             try {
                 await apiFetch('/local_merge', { method: 'POST', body: new URLSearchParams(new FormData(this)) });
-                document.getElementById('folderSelectBtn').textContent = '📁 选择包含.ts缓存的文件夹';
+                document.getElementById('folderSelectBtnText').textContent = '选择缓存文件夹';
                 folderInput.value = '';
                 showToast('合并任务添加成功');
                 refreshTasks(true);
@@ -567,14 +755,14 @@
         function openFolderModal() {
             document.getElementById('folderModal').style.display = 'block';
             const folderList = document.getElementById('folderList');
-            folderList.innerHTML = '<div style="text-align:center; padding:20px; color:#9ca3af;">正在加载...</div>';
+            folderList.innerHTML = '<div style="text-align:center; padding:20px; color:var(--faint);">正在加载...</div>';
             apiFetch('/api/folders')
                 .then(r => r.json())
                 .then(data => {
                     folderList.innerHTML = '';
                     if (!data.folders || data.folders.length === 0) {
                         const empty = document.createElement('div');
-                        empty.style.cssText = 'text-align:center; color:#9ca3af; padding:20px;';
+                        empty.style.cssText = 'text-align:center; color:var(--faint); padding:20px;';
                         empty.textContent = '/downloads 目录下没有找到任何文件夹';
                         folderList.appendChild(empty);
                         return;
@@ -590,7 +778,7 @@
                 .catch(err => {
                     folderList.innerHTML = '';
                     const error = document.createElement('div');
-                    error.style.cssText = 'text-align:center; color:#dc2626; padding:20px;';
+                    error.style.cssText = 'text-align:center; color:var(--danger); padding:20px;';
                     error.textContent = err.message || '获取文件夹列表失败';
                     folderList.appendChild(error);
                 });
@@ -601,7 +789,7 @@
         }
 
         function selectFolder(folderName) {
-            document.getElementById('folderSelectBtn').textContent = `✅ 已选择: ${folderName}`;
+            document.getElementById('folderSelectBtnText').textContent = `已选择: ${folderName}`;
             document.getElementById('folderInputHidden').value = folderName;
             closeFolderModal();
         }
@@ -898,7 +1086,7 @@
                 const listDiv = document.getElementById('videoFileList');
 
                 if (videoFilesData.length === 0) {
-                    container.innerHTML = '<div style="text-align:center; padding:20px; color:#94a3b8; font-size:13px;">未找到任何视频文件</div>';
+                    container.innerHTML = '<div style="text-align:center; padding:20px; color:var(--faint); font-size:13px;">未找到任何视频文件</div>';
                     listDiv.style.display = 'block';
                     updateSelectedVideoCount();
                     return;
