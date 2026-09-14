@@ -1119,56 +1119,22 @@ func aesDecrypt(data, key, iv []byte) ([]byte, error) {
 }
 
 // merge 用 ffmpeg concat demuxer 合并分片
-// best-effort 模式：缺失的分片用 ffmpeg 生成的黑场占位填充，保持总时长一致
+// best-effort 模式：缺失的分片直接跳过（不填黑场占位），输出总时长会比源略短
 func (d *Downloader) merge(ctx context.Context, p *m3u8.Playlist, output string) error {
-	// 1. 先扫一遍：哪些分片缺失？最大缺失时长是多少？
-	var missing, totalSegs int
-	var maxMissingDur float64
-	missingIdxs := []int{}
+	// 1. 先扫一遍：统计缺失分片数
+	var missing int
 	for i := range p.Segments {
 		segPath := filepath.Join(d.cfg.TempDir, fmt.Sprintf("seg_%05d.ts", p.Segments[i].Index))
 		if info, err := os.Stat(segPath); err == nil && info.Size() > 0 {
 			continue
 		}
 		missing++
-		missingIdxs = append(missingIdxs, i)
-		if p.Segments[i].Duration > maxMissingDur {
-			maxMissingDur = p.Segments[i].Duration
-		}
-		totalSegs++
 	}
 
-	// 2. 如果有缺失分片，生成一个黑场占位 .ts（时长取 maxMissingDur + 1s 余量）
-	//    concat demuxer 用 duration 指令把同一占位文件复用为多段，每段指定原始时长
-	placeholderPath := ""
-	if len(missingIdxs) > 0 {
-		placeholderPath = filepath.Join(d.cfg.TempDir, "_placeholder.ts")
-		// 占位时长：max + 1s 余量（避免 ffmpeg 报 "file too short"）
-		dur := maxMissingDur + 1.0
-		if dur < 1 {
-			dur = 1
-		}
-		genCmd := exec.CommandContext(ctx, d.cfg.FFmpegPath,
-			"-y",
-			"-f", "lavfi", "-i", "color=c=black:s=1280x720:r=25",
-			"-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
-			// -t 强制总时长：某些 ffmpeg 版本不认 color 的 duration= 参数，会退化成无限时长，
-			// 导致黑场编码一直卡住（CPU 长时间跑到 100%、merge 永不进入 concat）。
-			// 用 -t 明确截断，无论 color/音频来源时长如何，encode 最多 dur 秒必定结束。
-			"-t", fmt.Sprintf("%.4f", dur),
-			"-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
-			"-c:a", "aac", "-b:a", "64k",
-			"-f", "mpegts",
-			placeholderPath,
-		)
-		genCmd.Stdout = os.Stdout
-		genCmd.Stderr = os.Stderr
-		if err := genCmd.Run(); err != nil {
-			return fmt.Errorf("生成黑场占位失败: %w", err)
-		}
-	}
-
-	// 3. 生成 concat list
+	// 2. 生成 concat list：只列成功下载的分片，缺失的直接跳过
+	//    不再生成/填充黑场占位——本地播放缺失段直接跳过即可（更快更稳，
+	//    避免黑场固定 1280x720 与真实分片参数不一致导致部分播放器花屏，
+	//    也避免占位编码相关的卡死/超时问题）。代价是输出总时长会比源略短。
 	listPath := filepath.Join(d.cfg.TempDir, "_concat.txt")
 	var buf bytes.Buffer
 	if p.MapURI != "" {
@@ -1179,17 +1145,14 @@ func (d *Downloader) merge(ctx context.Context, p *m3u8.Playlist, output string)
 		segPath := filepath.Join(d.cfg.TempDir, fmt.Sprintf("seg_%05d.ts", p.Segments[idx].Index))
 		if info, err := os.Stat(segPath); err == nil && info.Size() > 0 {
 			fmt.Fprintf(&buf, "file 'seg_%05d.ts'\n", p.Segments[idx].Index)
-		} else {
-			// 缺失：用占位 + duration 指令指定原始时长
-			fmt.Fprintf(&buf, "file '_placeholder.ts'\nduration %.3f\n", p.Segments[idx].Duration)
 		}
 	}
 	if err := os.WriteFile(listPath, buf.Bytes(), 0644); err != nil {
 		return err
 	}
 	if missing > 0 {
-		d.logger("⚠️ best-effort 合并: %d/%d 个分片用黑场占位替代，输出 mp4 时长保持一致",
-			missing, totalSegs)
+		d.logger("⚠️ best-effort 合并: 跳过 %d 个缺失分片(共 %d 个)，输出 mp4 相应位置画面会跳断",
+			missing, len(p.Segments))
 	}
 
 	// 4. ffmpeg concat 合并
