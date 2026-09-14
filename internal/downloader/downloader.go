@@ -1210,7 +1210,9 @@ func (d *Downloader) runConcatMerge(ctx context.Context, p *m3u8.Playlist, outpu
 		return missing, err
 	}
 	// 完全对齐 armv7l 手动强合那条命令：ffmpeg -y -f concat -safe 0 -i input.txt -c copy out.mp4
-	// 故意不加 -bsf:a aac_adtstoasc（armv7l 也没用；某些 LATM/ASC 流它会报错）
+	// 加 -bsf:a aac_adtstoasc：mpegts 里 AAC 是 ADTS 格式（7字节 sync header + raw AAC），
+	// mp4 需要 raw AAC + ASC header，-c copy 不会自动转，必须 bsf 转换。
+	// 没有 audio 流时 ffmpeg 自动跳过；audio 非 AAC 时 ffmpeg 警告但不影响。
 	// 故意不加 -movflags +faststart（mux 完还要二次读盘重写 moov，对 1829 分片 + 低内存设备
 	// 是额外 IO 负担；普通 mp4 seek 略慢但能播）
 	// 加 -threads 1：concat demuxer 走 -c copy 是 IO-bound 顺序读，多线程收益小；
@@ -1226,6 +1228,7 @@ func (d *Downloader) runConcatMerge(ctx context.Context, p *m3u8.Playlist, outpu
 		"-i", listPath,
 		"-threads", "1",
 		"-c", "copy",
+		"-bsf:a", "aac_adtstoasc",
 		"-movflags", "+empty_moov+frag_keyframe",
 		"-min_frag_duration", "1000000",
 		output,
@@ -1497,12 +1500,14 @@ func (d *Downloader) MergeOnly(ctx context.Context, tempDir, output string) erro
 
 	d.logger("正在执行 ffmpeg concat 合并...")
 	// 强合路径同样用 fragmented mp4，避免 arm64 512MB / 1829 分片标准 mp4 muxer OOM
+	// 加 -bsf:a aac_adtstoasc：见 runConcatMerge 同名注释
 	cmd := exec.CommandContext(ctx, d.cfg.FFmpegPath,
 		"-y", "-nostats", "-progress", "pipe:1",
 		"-f", "concat", "-safe", "0",
 		"-i", listPath,
 		"-threads", "1",
 		"-c", "copy",
+		"-bsf:a", "aac_adtstoasc",
 		"-movflags", "+empty_moov+frag_keyframe",
 		"-min_frag_duration", "1000000",
 		output,
