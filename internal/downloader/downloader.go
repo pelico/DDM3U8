@@ -124,6 +124,12 @@ type Downloader struct {
 	segDurs   []segDuration // 成功的分片耗时
 	segFailed []segDuration // 失败的分片耗时 + 错误
 
+	// 缓存的 AES cipher.Block：Run 入口拿到 decryptKey 后构造一次，
+	// 所有分片复用——避免每个分片都调 aes.NewCipher 做 key schedule 展开
+	// （armv7l 上单次几十 µs，10w 分片可省 1-2s CPU）
+	// nil 表示当前 task 无加密（AES-128-CBC 解密只在有 key 时用）
+	block cipher.Block
+
 	// 进度快照（原子读写，供 Web 端轮询）
 	progress   Progress
 	progressMu sync.RWMutex
@@ -201,18 +207,20 @@ func (d *Downloader) recordSpeed(segBytes int64) float64 {
 	return float64(total) / dur
 }
 
-// humanBytes 把字节数格式化为人类可读大小（如 2.8GB）
-func humanBytes(n int64) string {
+// FormatBytes 把字节数格式化成人类可读大小（kB/MB/GB）
+// 与 server 包原来重复的 formatBytes 合并：之前 downloader 里有 humanBytes + formatBytes
+// 两个相同实现，server 包里又有第三个，统一下载到这里 export 出去
+func FormatBytes(b int64) string {
 	const unit = 1024
-	if n < unit {
-		return fmt.Sprintf("%dB", n)
+	if b < unit {
+		return fmt.Sprintf("%dB", b)
 	}
 	div, exp := int64(unit), 0
-	for x := n / unit; x >= unit; x /= unit {
+	for n := b / unit; n >= unit; n /= unit {
 		div *= unit
 		exp++
 	}
-	return fmt.Sprintf("%.1f%cB", float64(n)/float64(div), "KMGTPE"[exp])
+	return fmt.Sprintf("%.1f%cB", float64(b)/float64(div), "KMGTPE"[exp])
 }
 
 // SegDurationSample 单分片耗时样本（导出给 TaskManager 输出耗时分布）
@@ -344,7 +352,7 @@ func (d *Downloader) Run(ctx context.Context) (*Result, error) {
 			d.progressMu.Lock()
 			d.progress.Done = existing
 			d.progressMu.Unlock()
-			d.logger("断点续传: 已有 %d/%d 分片 (%s)，跳过这些", existing, result.Segments, humanBytes(existingBytes))
+			d.logger("断点续传: 已有 %d/%d 分片 (%s)，跳过这些", existing, result.Segments, FormatBytes(existingBytes))
 		}
 	}
 
@@ -353,12 +361,12 @@ func (d *Downloader) Run(ctx context.Context) (*Result, error) {
 		mapPath := filepath.Join(d.cfg.TempDir, "_init.mp4")
 		d.logger("下载 init segment: %s", playlist.MapURI)
 		// init segment 通常不参与 AES-128 CBC 解密，传 nil key
-		if err := d.downloadFile(ctx, playlist.MapURI, mapPath, playlist.MapBytes, nil, nil, 0); err != nil {
+		if err := d.downloadFile(ctx, playlist.MapURI, mapPath, playlist.MapBytes, nil, 0); err != nil {
 			return nil, fmt.Errorf("download init segment: %w", err)
 		}
 	}
 
-	// 6. 获取解密 key（若有）
+	// 6. 获取解密 key（若有），构造 AES cipher.Block 一次，所有分片复用
 	var decryptKey []byte
 	if playlist.Encryption != nil && playlist.Encryption.Method == "AES-128" {
 		keyBytes, err := d.fetchKey(ctx, playlist.Encryption.URI)
@@ -367,10 +375,18 @@ func (d *Downloader) Run(ctx context.Context) (*Result, error) {
 		}
 		decryptKey = keyBytes
 		d.logger("获取到 AES-128 解密 key (%d bytes)", len(decryptKey))
+		// 一次性 NewCipher：key schedule 展开后所有分片共用同一个 block，
+		// per-segment 只换 IV（cipher.NewCBCDecrypter）
+		block, err := aes.NewCipher(decryptKey)
+		if err != nil {
+			return nil, fmt.Errorf("init AES cipher: %w", err)
+		}
+		d.block = block
+		defer func() { d.block = nil }() // task 结束清空，避免大 key 长期驻留
 	}
 
 	// 7. 并发下载分片
-	if err := d.downloadSegments(ctx, playlist, decryptKey); err != nil {
+	if err := d.downloadSegments(ctx, playlist); err != nil {
 		return result, err
 	}
 	result.Failed = int(atomic.LoadInt32(&d.failed))
@@ -392,7 +408,7 @@ func (d *Downloader) Run(ctx context.Context) (*Result, error) {
 		// 同时给前端一个估算的输出大小（用已下载字节推算），让进度条合理
 		estBytes := d.downloadedBytes.Load()
 		d.logger("合并中: %s (%d 分片, 预估 %s)...",
-			filepath.Base(output), result.Segments, humanBytes(estBytes))
+			filepath.Base(output), result.Segments, FormatBytes(estBytes))
 		if err := d.merge(ctx, playlist, output); err != nil {
 			d.setProgress("failed", fmt.Sprintf("merge: %v", err))
 			return result, fmt.Errorf("merge: %w", err)
@@ -825,7 +841,8 @@ func (d *Downloader) recordAbuseAttempt(consec *int32, elapsed time.Duration, er
 // downloadSegments 并发下载所有分片
 // 渐进爬升：第一片同步下，让 transport 暖起连接、避免"启动瞬间对同 host 突发 N 条新连接"
 // 这种典型爬虫流量特征；之后才进 sem 限流的 goroutine 全量并发。
-func (d *Downloader) downloadSegments(ctx context.Context, p *m3u8.Playlist, key []byte) error {
+// 加密判断改用 d.block != nil（由 Run 入口预构造一次，所有分片复用）。
+func (d *Downloader) downloadSegments(ctx context.Context, p *m3u8.Playlist) error {
 	sem := make(chan struct{}, d.cfg.Concurrency)
 	var wg sync.WaitGroup
 	var firstErr error
@@ -858,7 +875,7 @@ func (d *Downloader) downloadSegments(ctx context.Context, p *m3u8.Playlist, key
 			d.progressMu.Unlock()
 			return
 		}
-		if err := d.downloadFile(cancelCtx, seg.URI, outPath, seg.ByteRange, key, fixedIV, seg.Index); err != nil {
+		if err := d.downloadFile(cancelCtx, seg.URI, outPath, seg.ByteRange, fixedIV, seg.Index); err != nil {
 			atomic.AddInt32(&d.failed, 1)
 			errMu.Lock()
 			if firstErr == nil {
@@ -948,7 +965,9 @@ func (d *Downloader) downloadSegments(ctx context.Context, p *m3u8.Playlist, key
 
 // downloadFile 下载单个分片到文件
 // IV 计算：fixedIV 非空则用 fixedIV；否则用 segIndex 作为 16 字节 IV 的低 8 字节（big-endian）。
-func (d *Downloader) downloadFile(ctx context.Context, segURL, outPath string, br *m3u8.ByteRange, key, fixedIV []byte, segIndex int) error {
+// 加密判断用 d.block != nil（Run 入口已构造一次，所有分片复用 cipher.Block，
+// 避免每分片都做 key schedule 展开）。
+func (d *Downloader) downloadFile(ctx context.Context, segURL, outPath string, br *m3u8.ByteRange, fixedIV []byte, segIndex int) error {
 	segStart := time.Now()
 	// 主动掐后单分片 timeout 翻倍（60→120→240s），封顶 300s
 	// 触发条件：abuseFails 标志被置位（doWithRetry 检测到 3 次连续 < 30s 快速失败）
@@ -1008,14 +1027,15 @@ func (d *Downloader) downloadFile(ctx context.Context, segURL, outPath string, b
 		d.recordSegDuration(segIndex, time.Since(segStart), 0, err)
 		return err
 	}
-	if key != nil {
+	if d.block != nil {
+		// 复用 Run 入口预构造的 cipher.Block，per-segment 只换 IV
 		iv := computeIV(fixedIV, segIndex)
-		dec, err := aesDecrypt(data, key, iv)
+		out, err := aesDecryptInPlace(data, d.block, iv)
 		if err != nil {
 			d.recordSegDuration(segIndex, time.Since(segStart), 0, err)
 			return err
 		}
-		data = dec
+		data = out
 	}
 	// 先写 .part 再 rename 为最终文件，确保 outPath 要么不存在要么完整
 	// 避免 WriteFile 中途被中断留下半截损坏文件被误判为已完成
@@ -1093,33 +1113,33 @@ func hexVal(c byte) int {
 	return -1
 }
 
-// aesDecrypt AES-128-CBC 解密，自动去 PKCS7 padding
-func aesDecrypt(data, key, iv []byte) ([]byte, error) {
+// aesDecryptInPlace 使用预构造的 cipher.Block 在 data buffer 原地解密 AES-128-CBC
+// 相比原 aesDecrypt（每次 NewCipher + 重新分配 dec buffer）：
+//   - block 复用（Run 入口 NewCipher 一次，所有分片共用）
+//   - 原地解密到原 data buffer，**节省 50% 内存峰值**（不再分配 dec 副本）
+//   - 截断 PKCS7 padding 后返回（data 切片头缩短，底层 backing array 不变）
+// 非 16 字节对齐时原样返回 data（可能本来就是未加密或截断的尾部）。
+func aesDecryptInPlace(data []byte, block cipher.Block, iv []byte) ([]byte, error) {
 	if len(data) == 0 {
 		return data, nil
 	}
 	if len(data)%16 != 0 {
-		// 非 16 字节对齐，可能未加密或截断，原样返回
+		// 非 16 字节对齐：原样返回（不报错，可能本来就没加密，或下载被截断）
 		return data, nil
 	}
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, err
-	}
 	mode := cipher.NewCBCDecrypter(block, iv)
-	dec := make([]byte, len(data))
-	mode.CryptBlocks(dec, data)
-	// 去 PKCS7 padding：校验末 n 个字节是否都等于 n，
+	mode.CryptBlocks(data, data) // 原地：data 既当 src 又当 dst
+	// 去 PKCS7 padding：校验末 n 个字节是否都等于 n
 	// 不合法说明 key/IV 错误或数据损坏，直接报错而非静默截断产生损坏输出
-	if n := int(dec[len(dec)-1]); n > 0 && n <= 16 && n <= len(dec) {
-		for i := len(dec) - n; i < len(dec); i++ {
-			if int(dec[i]) != n {
-				return nil, fmt.Errorf("invalid PKCS7 padding (expected %d at %d, got %d)", n, i, dec[i])
+	if n := int(data[len(data)-1]); n > 0 && n <= 16 && n <= len(data) {
+		for i := len(data) - n; i < len(data); i++ {
+			if int(data[i]) != n {
+				return nil, fmt.Errorf("invalid PKCS7 padding (expected %d at %d, got %d)", n, i, data[i])
 			}
 		}
-		dec = dec[:len(dec)-n]
+		return data[:len(data)-n], nil
 	}
-	return dec, nil
+	return data, nil
 }
 
 // merge 用 ffmpeg 合并分片
@@ -1134,20 +1154,9 @@ func aesDecrypt(data, key, iv []byte) ([]byte, error) {
 //   - 不加 -movflags +faststart：低内存设备不需要第二遍 IO + moov 缓冲；
 //     代价是 mp4 moov 在文件末尾，本地 VLC 播放正常
 func (d *Downloader) merge(ctx context.Context, p *m3u8.Playlist, output string) error {
-	// 1. 先扫一遍：统计缺失分片数
-	var missing int
-	for i := range p.Segments {
-		segPath := filepath.Join(d.cfg.TempDir, fmt.Sprintf("seg_%05d.ts", p.Segments[i].Index))
-		if info, err := os.Stat(segPath); err == nil && info.Size() > 0 {
-			continue
-		}
-		missing++
-	}
-
-	if missing > 0 {
-		d.logger("⚠️ best-effort 合并: 跳过 %d 个缺失分片(共 %d 个)，输出 mp4 相应位置画面会跳断",
-			missing, len(p.Segments))
-	}
+	// 现场诊断日志：让用户/我们立刻看到加密方式、格式、首个分片是否合法 mpegts
+	// 之前只看到"exit status 234"裸错码，加这几行能直接定位是哪种问题
+	d.logMergeDiagnostics(p)
 
 	// 总时长来自 playlist（分片时长之和），用于算百分比
 	var totalDur float64
@@ -1155,49 +1164,63 @@ func (d *Downloader) merge(ctx context.Context, p *m3u8.Playlist, output string)
 		totalDur += p.Segments[i].Duration
 	}
 
-	// 现场诊断日志：让用户/我们立刻看到加密方式、格式、首个分片是否合法 mpegts
-	// 之前只看到"exit status 234"裸错码，加这几行能直接定位是哪种问题
-	d.logMergeDiagnostics(p)
-
-	return d.runConcatMerge(ctx, p, output, totalDur)
+	// 单次扫描：runConcatMerge 内部扫一遍既统计 missing 又写 list，
+	// 避免之前 merge() 扫一遍 + runConcatMerge() 又扫一遍的 2N stat
+	missing, err := d.runConcatMerge(ctx, p, output, totalDur)
+	if err != nil {
+		return err
+	}
+	if missing > 0 {
+		d.logger("⚠️ best-effort 合并: 跳过 %d 个缺失分片(共 %d 个)，输出 mp4 相应位置画面会跳断",
+			missing, len(p.Segments))
+	}
+	return nil
 }
 
-// runConcatMerge 用 concat demuxer 合并：写临时 list 文件 + ffmpeg -f concat -i list.txt
-// 完全对齐 armv7l 那条"不怎么报错"的手动强合命令：
-//   ffmpeg -y -f concat -safe 0 -i input.txt -c copy out.mp4
+// runConcatMerge 用 concat demuxer 合并：单次扫描 tempDir 生成 _concat.txt + ffmpeg 命令
+// 单次循环同时：
+//   - 统计缺失分片数（返回 missing 供 merge 打 warning）
+//   - 生成 _concat.txt 内容（已下载的分片按 index 顺序写入）
+// 比之前"merge 扫一遍 + runConcatMerge 扫一遍"省一半 stat syscall（armv7l 1w 分片可省 1-2s）
 // 适用于 fMP4 (p.MapURI != "") 和纯 mpegts 两种格式（前者 list 第一行是 _init.mp4）
-func (d *Downloader) runConcatMerge(ctx context.Context, p *m3u8.Playlist, output string, totalDur float64) error {
+func (d *Downloader) runConcatMerge(ctx context.Context, p *m3u8.Playlist, output string, totalDur float64) (int, error) {
 	listPath := filepath.Join(d.cfg.TempDir, "_concat.txt")
 	var buf bytes.Buffer
 	if p.MapURI != "" {
 		// fMP4 必须以 init.mp4 开头（包含 moov/sidx 等元数据）
 		buf.WriteString("file '_init.mp4'\n")
 	}
+	var missing int
 	for i := range p.Segments {
 		idx := i
 		segPath := filepath.Join(d.cfg.TempDir, fmt.Sprintf("seg_%05d.ts", p.Segments[idx].Index))
 		if info, err := os.Stat(segPath); err == nil && info.Size() > 0 {
 			fmt.Fprintf(&buf, "file 'seg_%05d.ts'\n", p.Segments[idx].Index)
+		} else {
+			missing++
 		}
 	}
 	if buf.Len() == 0 {
-		return fmt.Errorf("no .ts segments found in %s", d.cfg.TempDir)
+		return missing, fmt.Errorf("no .ts segments found in %s", d.cfg.TempDir)
 	}
 	if err := os.WriteFile(listPath, buf.Bytes(), 0644); err != nil {
-		return err
+		return missing, err
 	}
 	// 完全对齐 armv7l 手动强合那条命令：ffmpeg -y -f concat -safe 0 -i input.txt -c copy out.mp4
 	// 故意不加 -bsf:a aac_adtstoasc（armv7l 也没用；某些 LATM/ASC 流它会报错）
 	// 故意不加 -movflags +faststart（armv7l 也没用；少一遍 IO + moov 缓冲对低内存 armv7l 友好）
+	// 加 -threads 1：concat demuxer 走 -c copy 是 IO-bound 顺序读，多线程收益小；
+	// 不限线程时 armv7l 4 核容器 ffmpeg 会拉满所有核，与 Go worker 抢 CPU
 	cmd := exec.CommandContext(ctx, d.cfg.FFmpegPath,
 		"-y", "-nostats", "-progress", "pipe:1",
 		"-f", "concat", "-safe", "0",
 		"-i", listPath,
+		"-threads", "1",
 		"-c", "copy",
 		output,
 	)
 	cmd.Dir = d.cfg.TempDir
-	return d.runFFmpegCmd(cmd, nil, totalDur)
+	return missing, d.runFFmpegCmd(cmd, nil, totalDur)
 }
 
 // runFFmpegCmd 跑 ffmpeg 进程：接 stderr、读 progress、可选灌 stdin
@@ -1316,20 +1339,6 @@ func (d *Downloader) dumpFFmpegLog(stderrBuf *bytes.Buffer) {
 	}
 }
 
-// formatBytes 把字节数格式化成人类可读大小（kB/MB/GB）。
-func formatBytes(b int64) string {
-	const unit = 1024
-	if b < unit {
-		return fmt.Sprintf("%dB", b)
-	}
-	div, exp := int64(unit), 0
-	for n := b / unit; n >= unit; n /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f%cB", float64(b)/float64(div), "KMGTPE"[exp])
-}
-
 // concatMergeProgress 解析 ffmpeg -progress pipe:1 输出（key=value 行），
 // 节流调用 logger 输出精简合并进度：size / bitrate / speed，若有总时长则显示百分比。
 // totalDur 是视频总时长（秒），<=0 表示未知（如强合场景），只显示绝对 time。
@@ -1389,7 +1398,7 @@ func mergeProgressLine(outTimeUs int64, totalDur float64, size int64, bitrate, s
 		buf.WriteString(fmt.Sprintf("合并中: %s", now))
 	}
 	if size > 0 {
-		buf.WriteString(fmt.Sprintf(" | size=%s", formatBytes(size)))
+		buf.WriteString(fmt.Sprintf(" | size=%s", FormatBytes(size)))
 	}
 	if bitrate != "" {
 		buf.WriteString(fmt.Sprintf(" | bitrate=%s", bitrate))
@@ -1480,6 +1489,7 @@ func (d *Downloader) MergeOnly(ctx context.Context, tempDir, output string) erro
 		"-y", "-nostats", "-progress", "pipe:1",
 		"-f", "concat", "-safe", "0",
 		"-i", listPath,
+		"-threads", "1",
 		"-c", "copy",
 		output,
 	)

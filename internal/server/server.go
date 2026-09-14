@@ -19,6 +19,10 @@ type Server struct {
 	tm  *TaskManager
 	cfg Config
 	mux *http.ServeMux
+
+	// indexHTML 启动时一次性把 templates/index.html 读到内存，handler 直接 w.Write
+	// 避免每次请求都 ReadFile 重新读 embed FS（armv7l 上 embed FS 走 mmap 读但仍有 syscall）
+	indexHTML []byte
 }
 
 // Config Web 服务配置
@@ -50,6 +54,12 @@ func New(cfg Config) *Server {
 		log.Printf("[启动清理] 清理了 %d 个残留临时目录", n)
 	}
 	s := &Server{tm: tm, cfg: cfg, mux: http.NewServeMux()}
+	// 启动时一次性把首页 HTML 读到内存缓存，避免每次请求都 ReadFile
+	if data, err := cfg.TemplatesFS.ReadFile("templates/index.html"); err == nil {
+		s.indexHTML = data
+	} else {
+		log.Printf("[警告] 加载 templates/index.html 失败: %v", err)
+	}
 	s.routes()
 	return s
 }
@@ -123,18 +133,18 @@ func (s *Server) loggerMiddleware(h http.Handler) http.Handler {
 // ============= 路由 handler =============
 
 // index 首页（返回 embed 的 templates/index.html）
+// 用启动时缓存的 indexHTML 直接写，避免每次 ReadFile
 func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" && r.URL.Path != "/index.html" {
 		http.NotFound(w, r)
 		return
 	}
-	data, err := s.cfg.TemplatesFS.ReadFile("templates/index.html")
-	if err != nil {
-		http.Error(w, "template not found", http.StatusInternalServerError)
+	if s.indexHTML == nil {
+		http.Error(w, "template not loaded", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write(data)
+	w.Write(s.indexHTML)
 }
 
 // healthHandler /health

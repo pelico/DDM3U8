@@ -16,3 +16,10 @@ temp/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# 老 Python 版（v0.3.13+ 已切 Go web，不再使用）
+# 仓库里仍保留方便对比参考，但绝不进 build context
+main.py
+requirements.txt
+requirements.armv7l.txt
+entrypoint.sh

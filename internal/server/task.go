@@ -75,7 +75,24 @@ type TaskManager struct {
 	ffmpegPath  string
 	fingerprint string
 	dbPath      string // 任务历史持久化路径（空则不持久化）
+
+	// saveMu 串行化 saveTasks 调用：多个协程可能并发调 saveTasks
+	//（如 runTask 完成 + 前端轮询触发 Snapshot + Delete 批量操作），
+	// 不加锁会并发 json.Marshal + WriteFile 浪费 CPU 和 IO
+	saveMu sync.Mutex
+
+	// 列表缓存：ListVideoFiles / ListFolders 每次 API 调用都全盘 Walk
+	// 几十 GB 视频库时前端明显卡。加 5s TTL 自动过期（不手动 invalidate：
+	// 新建/完成任务让前端能晚 5s 看到结果，代价小；避免增加 API 路径耦合）
+	listCacheMu     sync.Mutex
+	listCacheAt     time.Time
+	listCacheVideos []map[string]interface{}
+	listCacheFolds  []string
 }
+
+// listCacheTTL 列表缓存有效期。短到能让"新文件"尽快可见，
+// 长到能把高频轮询的 Walk 全部合并掉。
+const listCacheTTL = 5 * time.Second
 
 // NewTaskManager 创建任务管理器
 func NewTaskManager(maxParallel int, downloadDir, tempBaseDir, ffmpegPath, fingerprint, dbPath string) *TaskManager {
@@ -247,11 +264,11 @@ func (m *TaskManager) runTask(t *Task) {
 					avg := bytes / int64(done)
 					estTotal := avg * int64(total)
 					logLine += fmt.Sprintf(" | %s/%s",
-						formatBytes(bytes), formatBytes(estTotal))
+						downloader.FormatBytes(bytes), downloader.FormatBytes(estTotal))
 				}
 				// 显示当前下载速度
 				if speed > 0 {
-					logLine += fmt.Sprintf(" | %s/s", formatBytes(int64(speed)))
+					logLine += fmt.Sprintf(" | %s/s", downloader.FormatBytes(int64(speed)))
 				}
 				t.Log = logLine
 			} else {
@@ -329,8 +346,8 @@ func (m *TaskManager) runTask(t *Task) {
 	m.saveTasks() // 持久化：完成
 }
 
-// logSegDurationSummary 输出分片耗时分布摘要到指定 task 的 t.Log
-// 成功：总数/总耗时/平均速度/最快5/最慢5
+// logSegDurationSummary 输出下载摘要到指定 task 的 t.Log
+// 成功：总数/总耗时/平均速度
 // 失败：总数/快速失败(<30s)占比/主要错误类型分布
 // 帮助区分"主动掐流量"（<30s 快速失败集中）和"自然慢网"（耗时走满 60s）
 // 注意：本函数内部自行加锁 m.mu，调用方必须未持有 m.mu，否则死锁
@@ -359,24 +376,12 @@ func (m *TaskManager) logSegDurationSummary(t *Task, dl *downloader.Downloader) 
 			avgSpeed = float64(totalBytes) / totalElapsed.Seconds()
 		}
 
-		// 排序找最快/最慢各 5
-		sorted := make([]downloader.SegDurationSample, len(success))
-		copy(sorted, success)
-		sort.Slice(sorted, func(i, j int) bool { return sorted[i].Elapsed < sorted[j].Elapsed })
-
-		fastest := sorted[:min(5, len(sorted))]
-		slowest := sorted
-		if len(sorted) > 5 {
-			slowest = sorted[len(sorted)-5:]
-		}
 		lines = append(lines, fmt.Sprintf(
-			"[分片耗时摘要] 成功 %d 个 (总耗时 %s, 平均 %s/片, 平均速度 %s/s) | 最快: %s | 最慢: %s",
+			"[下载摘要] 成功 %d 个 (总耗时 %s, 平均 %s/片, 平均速度 %s/s)",
 			len(success),
 			totalElapsed.Truncate(time.Millisecond),
 			avgElapsed.Truncate(time.Millisecond),
-			formatBytes(int64(avgSpeed)),
-			formatSegList(fastest),
-			formatSegList(slowest),
+			downloader.FormatBytes(int64(avgSpeed)),
 		))
 	}
 
@@ -439,15 +444,6 @@ func (m *TaskManager) logSegDurationSummary(t *Task, dl *downloader.Downloader) 
 	m.mu.Unlock()
 }
 
-// formatSegList 把 seg 列表格式化为 "seg10(0.3s), seg25(0.5s), ..."
-func formatSegList(samples []downloader.SegDurationSample) string {
-	parts := make([]string, 0, len(samples))
-	for _, s := range samples {
-		parts = append(parts, fmt.Sprintf("seg%d(%s)", s.SegIndex, s.Elapsed.Truncate(time.Millisecond)))
-	}
-	return strings.Join(parts, ", ")
-}
-
 // normalizeErr 归一化错误信息，去掉易变部分（seg 编号、port、地址等）
 // 让相似的错误能聚合到一起，而不是被具体数字打散
 func normalizeErr(s string) string {
@@ -489,20 +485,6 @@ func removeTempDir(t *Task) {
 		return
 	}
 	_ = os.RemoveAll(t.cfg.TempDir)
-}
-
-// formatBytes 把字节数格式化为人类可读大小（如 2.8GB）
-func formatBytes(n int64) string {
-	const unit = 1024
-	if n < unit {
-		return fmt.Sprintf("%dB", n)
-	}
-	div, exp := int64(unit), 0
-	for x := n / unit; x >= unit; x /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f%cB", float64(n)/float64(div), "KMGTPE"[exp])
 }
 
 // Pause 暂停任务：取消正在执行的下载 context，但保留 temp_dir 与已下载分片，
@@ -1002,7 +984,16 @@ func MaskCookieInHeaders(h map[string]string) map[string]string {
 }
 
 // ListVideoFiles 扫描下载目录里的视频文件
+// 带 5s TTL 缓存：避免前端高频轮询时每次都全盘 Walk（armv7l 上百毫秒级 IO）
 func (m *TaskManager) ListVideoFiles() []map[string]interface{} {
+	m.listCacheMu.Lock()
+	if time.Since(m.listCacheAt) < listCacheTTL && m.listCacheVideos != nil {
+		cached := m.listCacheVideos
+		m.listCacheMu.Unlock()
+		return cached
+	}
+	m.listCacheMu.Unlock()
+
 	videos := []map[string]interface{}{}
 	videoExt := map[string]bool{".mp4": true, ".ts": true, ".mkv": true, ".m4a": true, ".avi": true}
 	err := filepath.Walk(m.downloadDir, func(path string, info os.FileInfo, err error) error {
@@ -1028,11 +1019,25 @@ func (m *TaskManager) ListVideoFiles() []map[string]interface{} {
 		return nil
 	})
 	_ = err
+
+	m.listCacheMu.Lock()
+	m.listCacheVideos = videos
+	m.listCacheAt = time.Now()
+	m.listCacheMu.Unlock()
 	return videos
 }
 
 // ListFolders 扫描一层 + 二层子目录
+// 与 ListVideoFiles 共享 5s TTL 缓存。
 func (m *TaskManager) ListFolders() []string {
+	m.listCacheMu.Lock()
+	if time.Since(m.listCacheAt) < listCacheTTL && m.listCacheFolds != nil {
+		cached := m.listCacheFolds
+		m.listCacheMu.Unlock()
+		return cached
+	}
+	m.listCacheMu.Unlock()
+
 	folders := []string{}
 	entries, err := os.ReadDir(m.downloadDir)
 	if err != nil {
@@ -1055,6 +1060,11 @@ func (m *TaskManager) ListFolders() []string {
 			folders = append(folders, e.Name()+"/"+s.Name())
 		}
 	}
+
+	m.listCacheMu.Lock()
+	m.listCacheFolds = folders
+	m.listCacheAt = time.Now()
+	m.listCacheMu.Unlock()
 	return folders
 }
 
@@ -1090,11 +1100,15 @@ type taskRecord struct {
 // saveTasks 把所有任务快照写盘（原子写：tmp + rename）。
 // 调用方必须已持有合适的锁（或快照已拷贝），本函数不再加 m.mu。
 // 在锁外执行文件 IO，避免持久化阻塞调度。
+// saveMu 串行化：多个协程并发调 saveTasks 时只允许一个实际执行 IO，
+// 避免重复 json.Marshal + WriteFile 浪费 CPU/IO（批量 Delete 时尤其明显）。
 // 空 dbPath 时为 no-op。
 func (m *TaskManager) saveTasks() {
 	if m.dbPath == "" {
 		return
 	}
+	m.saveMu.Lock()
+	defer m.saveMu.Unlock()
 	m.mu.RLock()
 	// 拷贝一份快照，尽快释放锁
 	records := make([]taskRecord, 0, len(m.tasks))
