@@ -1208,15 +1208,23 @@ func (d *Downloader) runConcatMerge(ctx context.Context, p *m3u8.Playlist, outpu
 	}
 	// 完全对齐 armv7l 手动强合那条命令：ffmpeg -y -f concat -safe 0 -i input.txt -c copy out.mp4
 	// 故意不加 -bsf:a aac_adtstoasc（armv7l 也没用；某些 LATM/ASC 流它会报错）
-	// 故意不加 -movflags +faststart（armv7l 也没用；少一遍 IO + moov 缓冲对低内存 armv7l 友好）
+	// 故意不加 -movflags +faststart（mux 完还要二次读盘重写 moov，对 1829 分片 + 低内存设备
+	// 是额外 IO 负担；普通 mp4 seek 略慢但能播）
 	// 加 -threads 1：concat demuxer 走 -c copy 是 IO-bound 顺序读，多线程收益小；
 	// 不限线程时 armv7l 4 核容器 ffmpeg 会拉满所有核，与 Go worker 抢 CPU
+	// 加 -movflags +empty_moov -frag_keyframe + -min_frag_duration 1000000（1 秒）：
+	// 标准 mp4 muxer 必须为所有 sample 累积完整 moov box 再写盘，1829 分片时内存峰值
+	// 直接 OOM（arm64 512MB 必爆、armv7l 1GB 实际可用 ~400MB 也危险）。
+	// fragmented mp4 让 muxer 每个 keyframe 切一个 fragment 立即写盘，moov 占位即可，
+	// 内存峰值 = 一个 fragment（几 MB），与分片数无关。
 	cmd := exec.CommandContext(ctx, d.cfg.FFmpegPath,
 		"-y", "-nostats", "-progress", "pipe:1",
 		"-f", "concat", "-safe", "0",
 		"-i", listPath,
 		"-threads", "1",
 		"-c", "copy",
+		"-movflags", "+empty_moov+frag_keyframe",
+		"-min_frag_duration", "1000000",
 		output,
 	)
 	cmd.Dir = d.cfg.TempDir
@@ -1485,12 +1493,15 @@ func (d *Downloader) MergeOnly(ctx context.Context, tempDir, output string) erro
 	}
 
 	d.logger("正在执行 ffmpeg concat 合并...")
+	// 强合路径同样用 fragmented mp4，避免 arm64 512MB / 1829 分片标准 mp4 muxer OOM
 	cmd := exec.CommandContext(ctx, d.cfg.FFmpegPath,
 		"-y", "-nostats", "-progress", "pipe:1",
 		"-f", "concat", "-safe", "0",
 		"-i", listPath,
 		"-threads", "1",
 		"-c", "copy",
+		"-movflags", "+empty_moov+frag_keyframe",
+		"-min_frag_duration", "1000000",
 		output,
 	)
 	cmd.Dir = tempDir
