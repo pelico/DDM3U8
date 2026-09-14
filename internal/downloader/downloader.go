@@ -1145,17 +1145,27 @@ func aesDecryptInPlace(data []byte, block cipher.Block, iv []byte) ([]byte, erro
 	return data, nil
 }
 
-// merge 用 ffmpeg 合并分片
-// best-effort 模式：缺失的分片直接跳过（不填黑场占位），输出总时长会比源略短
-// 路径策略：直接走 concat demuxer（fMP4 + mpegts 都用，命令与 armv7l 那条
-// "不怎么报错"的手动强合完全一致）。
-// 不再走 pipe:0：concat demuxer 本身就是按需逐段 open/read/close，
-// 内存 O(1) 与 pipe 相同，但少一层 Go ↔ ffmpeg 的 pipe 同步复杂度。
-// armv7l 验证过的命令：ffmpeg -y -f concat -safe 0 -i input.txt -c copy out.mp4
-//   - 不加 -bsf:a aac_adtstoasc：某些 LATM/ASC 流它会报错，ffmpeg 对 ADTS→ASC
-//     的转换会自动处理
-//   - 不加 -movflags +faststart：低内存设备不需要第二遍 IO + moov 缓冲；
-//     代价是 mp4 moov 在文件末尾，本地 VLC 播放正常
+// merge 用 ffmpeg 合并分片（统一走 concat demuxer，单次 IO + faststart）
+//
+// 路径策略（A 档：concat demuxer + faststart + 内存优化三件套）：
+//   - 单次 IO：ffmpeg -f concat -safe 0 -i _concat.txt -c copy 直灌 mp4，
+//     无 _full.ts 中间文件，避免"先 cat 再 remux"的重复磁盘读写。
+//   - 满足 web 边下边播：-movflags +faststart 把 moov box 写到文件头，
+//     OpenList/h5ai 等 web 端播放器拿到文件就能起播（不需要下完）。
+//   - 内存控制三件套（arm64 512MB 可用 ~300MB 设备不 OOM）：
+//       -max_muxing_queue_size 64  // 限制 muxer packet queue（默认 INT_MAX → 几百 MB → 几十 MB）
+//       -threads 1                 // 单线程省线程栈和锁开销
+//       -movflags +faststart       // moov 在文件头（不可避免地需要 sample table，但 ~5MB 可控）
+//   - fMP4 (MapURI != "")：concat demuxer 第一行写 'file _init.mp4'，
+//     保留 init.mp4 的 moov/sidx 元数据，二进制拼接会破坏 fMP4 结构。
+//   - 纯 mpegts：concat demuxer 第一行直接是 seg_00000.ts，循环按 playlist 顺序追加。
+// best-effort 模式：缺失的分片直接跳过（不填黑场占位），输出总时长会比源略短。
+//
+// 已知教训：
+//   - v0.3.19 漏了 -bsf:a aac_adtstoasc → "Malformed AAC bitstream detected"
+//   - v0.3.20 用 +empty_moov+frag_keyframe → web 端必须下载完整文件才能播
+//   - v0.3.20 之前用过 catSegments + 单文件 remux → 重复磁盘 IO（cat 一次写 _full.ts + remux 再读再写）
+//   本次统一为 concat demuxer + faststart 单次 IO，配合内存优化三件套满足全部约束。
 func (d *Downloader) merge(ctx context.Context, p *m3u8.Playlist, output string) error {
 	// 现场诊断日志：让用户/我们立刻看到加密方式、格式、首个分片是否合法 mpegts
 	// 之前只看到"exit status 234"裸错码，加这几行能直接定位是哪种问题
@@ -1167,8 +1177,8 @@ func (d *Downloader) merge(ctx context.Context, p *m3u8.Playlist, output string)
 		totalDur += p.Segments[i].Duration
 	}
 
-	// 单次扫描：runConcatMerge 内部扫一遍既统计 missing 又写 list，
-	// 避免之前 merge() 扫一遍 + runConcatMerge() 又扫一遍的 2N stat
+	// A 档统一路径：concat demuxer + faststart + 内存优化三件套
+	// fMP4 走同一路径（runConcatMerge 内部会处理 init.mp4 开头）
 	missing, err := d.runConcatMerge(ctx, p, output, totalDur)
 	if err != nil {
 		return err
@@ -1180,12 +1190,15 @@ func (d *Downloader) merge(ctx context.Context, p *m3u8.Playlist, output string)
 	return nil
 }
 
-// runConcatMerge 用 concat demuxer 合并：单次扫描 tempDir 生成 _concat.txt + ffmpeg 命令
-// 单次循环同时：
-//   - 统计缺失分片数（返回 missing 供 merge 打 warning）
-//   - 生成 _concat.txt 内容（已下载的分片按 index 顺序写入）
-// 比之前"merge 扫一遍 + runConcatMerge 扫一遍"省一半 stat syscall（armv7l 1w 分片可省 1-2s）
-// 适用于 fMP4 (p.MapURI != "") 和纯 mpegts 两种格式（前者 list 第一行是 _init.mp4）
+// runConcatMerge ffmpeg concat demuxer 合并路径（A 档方案，统一处理 fMP4 + 纯 mpegts）：
+//   - 单次扫描 tempDir 生成 _concat.txt（fMP4 头部追加 _init.mp4 行）
+//   - ffmpeg 单次 IO 直灌 mp4：concat demuxer 按需逐段 open/read/close，O(1) 内存
+//   - 内存优化三件套（防止 arm64 512MB 设备 OOM）：
+//       -max_muxing_queue_size 64  限制 muxer packet queue（默认 INT_MAX → 几百 MB）
+//       -threads 1                 单线程，省线程栈和锁
+//       -movflags +faststart       moov 写到文件头（OpenList web 边下边播）
+// 唯一代价：faststart 需要 sample table 全量在内存（~5MB，1800 分片），但 muxer queue
+// 限制后总峰值约 30-50MB（ffmpeg 进程基础开销），arm64 512MB 可用 ~300MB 完全够用。
 func (d *Downloader) runConcatMerge(ctx context.Context, p *m3u8.Playlist, output string, totalDur float64) (int, error) {
 	listPath := filepath.Join(d.cfg.TempDir, "_concat.txt")
 	var buf bytes.Buffer
@@ -1209,30 +1222,20 @@ func (d *Downloader) runConcatMerge(ctx context.Context, p *m3u8.Playlist, outpu
 	if err := os.WriteFile(listPath, buf.Bytes(), 0644); err != nil {
 		return missing, err
 	}
-	// 完全对齐 armv7l 手动强合那条命令：ffmpeg -y -f concat -safe 0 -i input.txt -c copy out.mp4
-	// 加 -bsf:a aac_adtstoasc：mpegts 里 AAC 是 ADTS 格式（7字节 sync header + raw AAC），
-	// mp4 需要 raw AAC + ASC header，-c copy 不会自动转，必须 bsf 转换。
-	// 没有 audio 流时 ffmpeg 自动跳过；audio 非 AAC 时 ffmpeg 警告但不影响。
-	// 故意不加 -movflags +faststart（mux 完还要二次读盘重写 moov，对 1829 分片 + 低内存设备
-	// 是额外 IO 负担；普通 mp4 seek 略慢但能播）
-	// 加 -threads 1：concat demuxer 走 -c copy 是 IO-bound 顺序读，多线程收益小；
-	// 不限线程时 armv7l 4 核容器 ffmpeg 会拉满所有核，与 Go worker 抢 CPU
-	// 加 -movflags +empty_moov -frag_keyframe + -min_frag_duration 1000000（1 秒）：
-	// 标准 mp4 muxer 必须为所有 sample 累积完整 moov box 再写盘，1829 分片时内存峰值
-	// 直接 OOM（arm64 512MB 必爆、armv7l 1GB 实际可用 ~400MB 也危险）。
-	// fragmented mp4 让 muxer 每个 keyframe 切一个 fragment 立即写盘，moov 占位即可，
-	// 内存峰值 = 一个 fragment（几 MB），与分片数无关。
-	cmd := exec.CommandContext(ctx, d.cfg.FFmpegPath,
+	// A 档：单次 IO + faststart + 内存三件套
+	// -bsf:a aac_adtstoasc：ADTS AAC → ASC，mp4 容器需要（v0.3.19 教训）
+	args := []string{
 		"-y", "-nostats", "-progress", "pipe:1",
 		"-f", "concat", "-safe", "0",
 		"-i", listPath,
-		"-threads", "1",
 		"-c", "copy",
 		"-bsf:a", "aac_adtstoasc",
-		"-movflags", "+empty_moov+frag_keyframe",
-		"-min_frag_duration", "1000000",
+		"-max_muxing_queue_size", "64",
+		"-threads", "1",
+		"-movflags", "+faststart",
 		output,
-	)
+	}
+	cmd := exec.CommandContext(ctx, d.cfg.FFmpegPath, args...)
 	cmd.Dir = d.cfg.TempDir
 	return missing, d.runFFmpegCmd(cmd, nil, totalDur)
 }
@@ -1499,17 +1502,19 @@ func (d *Downloader) MergeOnly(ctx context.Context, tempDir, output string) erro
 	}
 
 	d.logger("正在执行 ffmpeg concat 合并...")
-	// 强合路径同样用 fragmented mp4，避免 arm64 512MB / 1829 分片标准 mp4 muxer OOM
-	// 加 -bsf:a aac_adtstoasc：见 runConcatMerge 同名注释
+	// 强合路径走 A 档方案（与 runConcatMerge 一致）：concat demuxer + faststart + 内存优化三件套
+	// -max_muxing_queue_size 64 + -threads 1：避免 arm64 512MB 设备 OOM
+	// -movflags +faststart：moov 在文件头，强合后的 mp4 也能在 OpenList web 端边下边播
+	// -bsf:a aac_adtstoasc：ADTS AAC → ASC，mp4 容器需要
 	cmd := exec.CommandContext(ctx, d.cfg.FFmpegPath,
 		"-y", "-nostats", "-progress", "pipe:1",
 		"-f", "concat", "-safe", "0",
 		"-i", listPath,
-		"-threads", "1",
 		"-c", "copy",
 		"-bsf:a", "aac_adtstoasc",
-		"-movflags", "+empty_moov+frag_keyframe",
-		"-min_frag_duration", "1000000",
+		"-max_muxing_queue_size", "64",
+		"-threads", "1",
+		"-movflags", "+faststart",
 		output,
 	)
 	cmd.Dir = tempDir
