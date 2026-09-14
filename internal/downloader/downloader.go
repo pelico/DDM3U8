@@ -1143,8 +1143,9 @@ func (d *Downloader) merge(ctx context.Context, p *m3u8.Playlist, output string)
 	}
 
 	var cmd *exec.Cmd
+	var stdinPusher func() error // 仅 mpegts 分支用到：把分片灌进 ffmpeg stdin
 	if p.MapURI != "" {
-		// 情况 B（fMP4，有 init.mp4）：不适用于 mpegts 二进制拼接，回退 concat demuxer
+		// 情况 B（fMP4，有 init.mp4）：不适用于 mpegts 二进制拼接/管道，回退 concat demuxer
 		listPath := filepath.Join(d.cfg.TempDir, "_concat.txt")
 		var buf bytes.Buffer
 		buf.WriteString("file '_init.mp4'\n")
@@ -1167,11 +1168,11 @@ func (d *Downloader) merge(ctx context.Context, p *m3u8.Playlist, output string)
 		)
 		cmd.Dir = d.cfg.TempDir
 	} else {
-		// 情况 A（常见 HLS mpegts）：分片二进制直接拼接成一个全量 ts，再单文件 remux 成 mp4。
-		// 内存 O(1)（顺序 copy），避免 concat demuxer 对几千分片的逐段缓冲峰值——这与 armv7l
-		// 稳定版"下载器拼成单个 ts → ffmpeg -i ts remux"完全一致，单输入 remux 下保留
-		// faststart 也不会 OOM，同时保留"缓存一部分即可播放"。
-		fullTS := filepath.Join(d.cfg.TempDir, "_full.ts")
+		// 情况 A（常见 HLS mpegts）：分片二进制直接经 ffmpeg stdin 管道灌入。
+		// 不再落盘 _full.ts，避免"整部读 + 整部写"的额外 IO 翻倍；mp4 文件从 ffmpeg 启动起持续增长到完成。
+		// 内存 O(1) 仅取决于 pipe 缓冲（默认 64KB），彻底避免 concat demuxer 对几千分片的逐段缓冲。
+		// 管道输入没有文件扩展名，必须显式指定 -f mpegts 让 ffmpeg 解析 ts 格式。
+		// 保留 +faststart：faststart 作用于输出 mp4（第二遍重排 moov），与输入是否可 seek 无关。
 		var segFiles []string
 		for i := range p.Segments {
 			idx := i
@@ -1180,16 +1181,17 @@ func (d *Downloader) merge(ctx context.Context, p *m3u8.Playlist, output string)
 				segFiles = append(segFiles, segPath)
 			}
 		}
-		if err := d.catSegments(segFiles, fullTS); err != nil {
-			return fmt.Errorf("拼接分片失败: %w", err)
+		if len(segFiles) == 0 {
+			return fmt.Errorf("no .ts segments found in %s", d.cfg.TempDir)
 		}
 		cmd = exec.CommandContext(ctx, d.cfg.FFmpegPath,
 			"-y", "-nostats", "-progress", "pipe:1",
-			"-i", fullTS,
+			"-f", "mpegts", "-i", "pipe:0",
 			"-c", "copy", "-bsf:a", "aac_adtstoasc",
 			"-movflags", "+faststart",
 			output,
 		)
+		stdinPusher = func() error { return d.pushSegmentsToStdin(cmd, segFiles) }
 	}
 
 	cmd.Stderr = os.Stderr
@@ -1200,46 +1202,64 @@ func (d *Downloader) merge(ctx context.Context, p *m3u8.Playlist, output string)
 		return err
 	}
 	go d.concatMergeProgress(pr, totalDur)
-	err := cmd.Wait()
+
+	// mpegts 分支：异步把分片写入 ffmpeg stdin（避免喂分片与读 progress 互相阻塞）
+	var err error
+	if stdinPusher != nil {
+		done := make(chan error, 1)
+		go func() { done <- stdinPusher() }()
+		// 同时等 ffmpeg 进程结束和 stdin 写完，先 Wait 进程再看写错没
+		err = cmd.Wait()
+		pw.Close()
+		pr.Close()
+		if werr := <-done; werr != nil && err == nil {
+			err = fmt.Errorf("feed segments to ffmpeg: %w", werr)
+		}
+		return err
+	}
+
+	err = cmd.Wait()
 	pw.Close()
 	pr.Close()
 	return err
 }
 
-// catSegments 顺序把多个 mpegts 分片二进制拼接成单个 .ts（内存 O(1)、纯顺序 IO）。
-// 替代 concat demuxer 对几千分片的逐段缓冲，显著降低合并时的峰值内存。
-// 拼接是纯文件拷贝、不经过 ffmpeg，因此阶段内定期输出进度，避免"看着像卡住"。
-func (d *Downloader) catSegments(segFiles []string, dest string) error {
-	dst, err := os.Create(dest)
+// pushSegmentsToStdin 顺序读取 segFiles 中的所有 mpegts 分片并写入 ffmpeg stdin。
+// 配合 "-f mpegts -i pipe:0"，ffmpeg 边读边解析、边输出 mp4，无中间 _full.ts 落盘。
+// 写入过程会定期输出进度（喂入分片 n/total），让用户在 ffmpeg -progress 反馈前也看到动。
+// 注意：必须在独立 goroutine 中执行（不要和读 stdout 的 concatMergeProgress 在同 goroutine，
+// 否则管道缓冲写满会死锁）。
+func (d *Downloader) pushSegmentsToStdin(cmd *exec.Cmd, segFiles []string) error {
+	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return err
 	}
-	defer dst.Close()
 	total := len(segFiles)
 	if total > 0 {
-		d.logger("拼接分片(纯拷贝，无ffmpeg进程): 0/%d", total)
+		d.logger("合并中: 喂入分片 0/%d (实时写入 ffmpeg, 无中间文件)", total)
 	}
 	buf := make([]byte, 4*1024*1024)
-	// 每 200 片刷一次进度，避免刷屏
 	lastLog := time.Now()
 	for i, f := range segFiles {
 		src, err := os.Open(f)
 		if err != nil {
-			return fmt.Errorf("cat open %s: %w", f, err)
+			stdin.Close()
+			return fmt.Errorf("open %s: %w", f, err)
 		}
-		_, err = io.CopyBuffer(dst, src, buf)
+		_, err = io.CopyBuffer(stdin, src, buf)
 		src.Close()
 		if err != nil {
-			return fmt.Errorf("cat copy %s: %w", f, err)
+			stdin.Close()
+			return fmt.Errorf("copy %s: %w", f, err)
 		}
 		if i%200 == 199 || i == total-1 {
 			if time.Since(lastLog) >= time.Second || i == total-1 {
-				d.logger("拼接分片: %d/%d", i+1, total)
+				d.logger("合并中: 喂入分片 %d/%d", i+1, total)
 				lastLog = time.Now()
 			}
 		}
 	}
-	return nil
+	return stdin.Close()
 }
 
 // formatBytes 把字节数格式化成人类可读大小（kB/MB/GB）。
@@ -1382,8 +1402,9 @@ func (d *Downloader) MergeOnly(ctx context.Context, tempDir, output string) erro
 		map[bool]string{true: " (含 init)", false: ""}[hasInit], output)
 
 	var cmd *exec.Cmd
+	var stdinPusher func() error
 	if hasInit {
-		// fMP4（有 init.mp4）不适用于 mpegts 二进制拼接，回退 concat demuxer；
+		// fMP4（有 init.mp4）不适用于 mpegts 二进制拼接/管道，回退 concat demuxer；
 		// 去掉 faststart（对齐 armv7l 强合），降低 concat demuxer + faststart 叠加的内存峰值
 		listPath := filepath.Join(tempDir, "_concat.txt")
 		var buf bytes.Buffer
@@ -1404,24 +1425,21 @@ func (d *Downloader) MergeOnly(ctx context.Context, tempDir, output string) erro
 		)
 		cmd.Dir = tempDir
 	} else {
-		// 纯 mpegts：二进制直拼成单个 ts（内存 O(1)），再单文件 remux + faststart，
-		// 与 armv7l 稳定版完全一致——单输入 remux 保留 faststart 也不会 OOM，且保留边播能力
-		fullTS := filepath.Join(tempDir, "_full.ts")
+		// 纯 mpegts：分片二进制直接经 ffmpeg stdin 管道灌入（无 _full.ts 落盘、mp4 持续增长）。
+		// 内存 O(1) 仅取决于 pipe 缓冲；faststart 作用于输出 mp4，与输入是否可 seek 无关。
 		segFiles := make([]string, 0, len(segs))
 		for _, name := range segs {
 			segFiles = append(segFiles, filepath.Join(tempDir, name))
 		}
-		if err := d.catSegments(segFiles, fullTS); err != nil {
-			return fmt.Errorf("拼接分片失败: %w", err)
-		}
-		d.logger("正在 ffmpeg 封装 mp4 (mpegts 直拼)...")
+		d.logger("正在 ffmpeg 封装 mp4 (实时写入, 无中间文件)...")
 		cmd = exec.CommandContext(ctx, d.cfg.FFmpegPath,
 			"-y", "-nostats", "-progress", "pipe:1",
-			"-i", fullTS,
+			"-f", "mpegts", "-i", "pipe:0",
 			"-c", "copy", "-bsf:a", "aac_adtstoasc",
 			"-movflags", "+faststart",
 			output,
 		)
+		stdinPusher = func() error { return d.pushSegmentsToStdin(cmd, segFiles) }
 	}
 
 	// 捕获 ffmpeg stderr 到 buffer，合并后输出到 logger（避免 io.Pipe 无缓冲
@@ -1436,9 +1454,20 @@ func (d *Downloader) MergeOnly(ctx context.Context, tempDir, output string) erro
 		return err
 	}
 	go d.concatMergeProgress(pr, 0)
-	err = cmd.Wait()
-	pw.Close()
-	pr.Close()
+	if stdinPusher != nil {
+		done := make(chan error, 1)
+		go func() { done <- stdinPusher() }()
+		err = cmd.Wait()
+		pw.Close()
+		pr.Close()
+		if werr := <-done; werr != nil && err == nil {
+			err = fmt.Errorf("feed segments to ffmpeg: %w", werr)
+		}
+	} else {
+		err = cmd.Wait()
+		pw.Close()
+		pr.Close()
+	}
 	// 合并完成后输出 ffmpeg 日志（最后 20 行，避免过长）
 	lines := strings.Split(strings.TrimSpace(stderrBuf.String()), "\n")
 	start := 0
