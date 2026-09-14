@@ -364,19 +364,31 @@ func (m *TaskManager) logSegDurationSummary(t *Task, dl *downloader.Downloader) 
 	if len(success) > 0 {
 		var totalElapsed time.Duration
 		var totalBytes int64
+		var realCount int // elapsed > 0 的"实际下载"分片数（断点续传缓存的 elapsed=0 不计入平均）
+		var realBytes int64
 		for _, s := range success {
-			totalElapsed += s.Elapsed
 			totalBytes += s.Bytes
+			if s.Elapsed > 0 {
+				totalElapsed += s.Elapsed
+				realBytes += s.Bytes
+				realCount++
+			}
 		}
-		avgElapsed := totalElapsed / time.Duration(len(success))
+		avgElapsed := time.Duration(0)
+		if realCount > 0 {
+			avgElapsed = totalElapsed / time.Duration(realCount)
+		}
 		var avgSpeed float64
 		if totalElapsed > 0 {
-			avgSpeed = float64(totalBytes) / totalElapsed.Seconds()
+			avgSpeed = float64(realBytes) / totalElapsed.Seconds()
 		}
 
+		// 区分"实际下载"和"缓存命中"两个数字，便于断点续传场景诊断
+		cachedCount := len(success) - realCount
 		lines = append(lines, fmt.Sprintf(
-			"[下载摘要] 成功 %d 个 (总耗时 %s, 平均 %s/片, 平均速度 %s/s)",
+			"[下载摘要] 成功 %d 个 (实际下载 %d + 缓存命中 %d) (总耗时 %s, 平均 %s/片, 平均速度 %s/s)",
 			len(success),
+			realCount, cachedCount,
 			totalElapsed.Truncate(time.Millisecond),
 			avgElapsed.Truncate(time.Millisecond),
 			downloader.FormatBytes(int64(avgSpeed)),

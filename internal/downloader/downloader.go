@@ -869,6 +869,9 @@ func (d *Downloader) downloadSegments(ctx context.Context, p *m3u8.Playlist) err
 		// 校验文件存在且大小>0：避免跳过上次网络中断写一半的损坏分片
 		if info, err := os.Stat(outPath); err == nil && info.Size() > 0 {
 			// 已下载（断点续传），跳过
+			// 仍记录到 segDurs（elapsed=0）让摘要能区分"实际下载"和"缓存命中"，
+			// 否则断点续传场景下"成功 N 个"会远小于实际进入合并的分片数。
+			d.recordSegDuration(seg.Index, 0, info.Size(), nil)
 			// 注意：预扫描已把 Done 算进去了，这里只更新 Current，不重复 Done++
 			d.progressMu.Lock()
 			d.progress.Current = seg.Index
