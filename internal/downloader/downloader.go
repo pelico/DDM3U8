@@ -1131,46 +1131,67 @@ func (d *Downloader) merge(ctx context.Context, p *m3u8.Playlist, output string)
 		missing++
 	}
 
-	// 2. 生成 concat list：只列成功下载的分片，缺失的直接跳过
-	//    不再生成/填充黑场占位——本地播放缺失段直接跳过即可（更快更稳，
-	//    避免黑场固定 1280x720 与真实分片参数不一致导致部分播放器花屏，
-	//    也避免占位编码相关的卡死/超时问题）。代价是输出总时长会比源略短。
-	listPath := filepath.Join(d.cfg.TempDir, "_concat.txt")
-	var buf bytes.Buffer
-	if p.MapURI != "" {
-		buf.WriteString("file '_init.mp4'\n")
-	}
-	for i := range p.Segments {
-		idx := i
-		segPath := filepath.Join(d.cfg.TempDir, fmt.Sprintf("seg_%05d.ts", p.Segments[idx].Index))
-		if info, err := os.Stat(segPath); err == nil && info.Size() > 0 {
-			fmt.Fprintf(&buf, "file 'seg_%05d.ts'\n", p.Segments[idx].Index)
-		}
-	}
-	if err := os.WriteFile(listPath, buf.Bytes(), 0644); err != nil {
-		return err
-	}
 	if missing > 0 {
 		d.logger("⚠️ best-effort 合并: 跳过 %d 个缺失分片(共 %d 个)，输出 mp4 相应位置画面会跳断",
 			missing, len(p.Segments))
 	}
 
-	// 4. ffmpeg concat 合并
-	// 加 -movflags +faststart：把 moov atom 移到文件头，支持边下边播
-	// 用 -nostats + -progress pipe:1 替代默认 stderr 刷屏，改为自己解析精简进度
-	cmd := exec.CommandContext(ctx, d.cfg.FFmpegPath,
-		"-y",
-		"-nostats",
-		"-progress", "pipe:1",
-		"-f", "concat",
-		"-safe", "0",
-		"-i", listPath,
-		"-c", "copy",
-		"-bsf:a", "aac_adtstoasc",
-		"-movflags", "+faststart",
-		output,
-	)
-	cmd.Dir = d.cfg.TempDir
+	// 总时长来自 playlist（分片时长之和），用于算百分比
+	var totalDur float64
+	for i := range p.Segments {
+		totalDur += p.Segments[i].Duration
+	}
+
+	var cmd *exec.Cmd
+	if p.MapURI != "" {
+		// 情况 B（fMP4，有 init.mp4）：不适用于 mpegts 二进制拼接，回退 concat demuxer
+		listPath := filepath.Join(d.cfg.TempDir, "_concat.txt")
+		var buf bytes.Buffer
+		buf.WriteString("file '_init.mp4'\n")
+		for i := range p.Segments {
+			idx := i
+			segPath := filepath.Join(d.cfg.TempDir, fmt.Sprintf("seg_%05d.ts", p.Segments[idx].Index))
+			if info, err := os.Stat(segPath); err == nil && info.Size() > 0 {
+				fmt.Fprintf(&buf, "file 'seg_%05d.ts'\n", p.Segments[idx].Index)
+			}
+		}
+		if err := os.WriteFile(listPath, buf.Bytes(), 0644); err != nil {
+			return err
+		}
+		cmd = exec.CommandContext(ctx, d.cfg.FFmpegPath,
+			"-y", "-nostats", "-progress", "pipe:1",
+			"-f", "concat", "-safe", "0",
+			"-i", listPath,
+			"-c", "copy", "-bsf:a", "aac_adtstoasc",
+			output,
+		)
+		cmd.Dir = d.cfg.TempDir
+	} else {
+		// 情况 A（常见 HLS mpegts）：分片二进制直接拼接成一个全量 ts，再单文件 remux 成 mp4。
+		// 内存 O(1)（顺序 copy），避免 concat demuxer 对几千分片的逐段缓冲峰值——这与 armv7l
+		// 稳定版"下载器拼成单个 ts → ffmpeg -i ts remux"完全一致，单输入 remux 下保留
+		// faststart 也不会 OOM，同时保留"缓存一部分即可播放"。
+		fullTS := filepath.Join(d.cfg.TempDir, "_full.ts")
+		var segFiles []string
+		for i := range p.Segments {
+			idx := i
+			segPath := filepath.Join(d.cfg.TempDir, fmt.Sprintf("seg_%05d.ts", p.Segments[idx].Index))
+			if info, err := os.Stat(segPath); err == nil && info.Size() > 0 {
+				segFiles = append(segFiles, segPath)
+			}
+		}
+		if err := d.catSegments(segFiles, fullTS); err != nil {
+			return fmt.Errorf("拼接分片失败: %w", err)
+		}
+		cmd = exec.CommandContext(ctx, d.cfg.FFmpegPath,
+			"-y", "-nostats", "-progress", "pipe:1",
+			"-i", fullTS,
+			"-c", "copy", "-bsf:a", "aac_adtstoasc",
+			"-movflags", "+faststart",
+			output,
+		)
+	}
+
 	cmd.Stderr = os.Stderr
 
 	pr, pw := io.Pipe()
@@ -1178,16 +1199,34 @@ func (d *Downloader) merge(ctx context.Context, p *m3u8.Playlist, output string)
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-	// 总时长来自 playlist（分片时长之和），用于算百分比
-	var totalDur float64
-	for i := range p.Segments {
-		totalDur += p.Segments[i].Duration
-	}
 	go d.concatMergeProgress(pr, totalDur)
 	err := cmd.Wait()
 	pw.Close()
 	pr.Close()
 	return err
+}
+
+// catSegments 顺序把多个 mpegts 分片二进制拼接成单个 .ts（内存 O(1)、纯顺序 IO）。
+// 替代 concat demuxer 对几千分片的逐段缓冲，显著降低合并时的峰值内存。
+func (d *Downloader) catSegments(segFiles []string, dest string) error {
+	dst, err := os.Create(dest)
+	if err != nil {
+		return err
+	}
+	defer dst.Close()
+	buf := make([]byte, 4*1024*1024)
+	for _, f := range segFiles {
+		src, err := os.Open(f)
+		if err != nil {
+			return fmt.Errorf("cat open %s: %w", f, err)
+		}
+		_, err = io.CopyBuffer(dst, src, buf)
+		src.Close()
+		if err != nil {
+			return fmt.Errorf("cat copy %s: %w", f, err)
+		}
+	}
+	return nil
 }
 
 // formatBytes 把字节数格式化成人类可读大小（kB/MB/GB）。
@@ -1326,35 +1365,52 @@ func (d *Downloader) MergeOnly(ctx context.Context, tempDir, output string) erro
 	// 按文件名升序（seg_00000.ts, seg_00001.ts, ... 自然顺序）
 	sort.Strings(segs)
 
-	listPath := filepath.Join(tempDir, "_concat.txt")
-	var buf bytes.Buffer
-	if hasInit {
-		buf.WriteString("file '_init.mp4'\n")
-	}
-	for _, name := range segs {
-		fmt.Fprintf(&buf, "file '%s'\n", name)
-	}
-	if err := os.WriteFile(listPath, buf.Bytes(), 0644); err != nil {
-		return err
-	}
-
 	d.logger("强合: %d 个分片%s -> %s", len(segs),
 		map[bool]string{true: " (含 init)", false: ""}[hasInit], output)
-	d.logger("正在执行 ffmpeg concat 合并...")
 
-	cmd := exec.CommandContext(ctx, d.cfg.FFmpegPath,
-		"-y",
-		"-nostats",
-		"-progress", "pipe:1",
-		"-f", "concat",
-		"-safe", "0",
-		"-i", listPath,
-		"-c", "copy",
-		"-bsf:a", "aac_adtstoasc",
-		"-movflags", "+faststart",
-		output,
-	)
-	cmd.Dir = tempDir
+	var cmd *exec.Cmd
+	if hasInit {
+		// fMP4（有 init.mp4）不适用于 mpegts 二进制拼接，回退 concat demuxer；
+		// 去掉 faststart（对齐 armv7l 强合），降低 concat demuxer + faststart 叠加的内存峰值
+		listPath := filepath.Join(tempDir, "_concat.txt")
+		var buf bytes.Buffer
+		buf.WriteString("file '_init.mp4'\n")
+		for _, name := range segs {
+			fmt.Fprintf(&buf, "file '%s'\n", name)
+		}
+		if err := os.WriteFile(listPath, buf.Bytes(), 0644); err != nil {
+			return err
+		}
+		d.logger("正在执行 ffmpeg concat 合并...")
+		cmd = exec.CommandContext(ctx, d.cfg.FFmpegPath,
+			"-y", "-nostats", "-progress", "pipe:1",
+			"-f", "concat", "-safe", "0",
+			"-i", listPath,
+			"-c", "copy", "-bsf:a", "aac_adtstoasc",
+			output,
+		)
+		cmd.Dir = tempDir
+	} else {
+		// 纯 mpegts：二进制直拼成单个 ts（内存 O(1)），再单文件 remux + faststart，
+		// 与 armv7l 稳定版完全一致——单输入 remux 保留 faststart 也不会 OOM，且保留边播能力
+		fullTS := filepath.Join(tempDir, "_full.ts")
+		segFiles := make([]string, 0, len(segs))
+		for _, name := range segs {
+			segFiles = append(segFiles, filepath.Join(tempDir, name))
+		}
+		if err := d.catSegments(segFiles, fullTS); err != nil {
+			return fmt.Errorf("拼接分片失败: %w", err)
+		}
+		d.logger("正在 ffmpeg 封装 mp4 (mpegts 直拼)...")
+		cmd = exec.CommandContext(ctx, d.cfg.FFmpegPath,
+			"-y", "-nostats", "-progress", "pipe:1",
+			"-i", fullTS,
+			"-c", "copy", "-bsf:a", "aac_adtstoasc",
+			"-movflags", "+faststart",
+			output,
+		)
+	}
+
 	// 捕获 ffmpeg stderr 到 buffer，合并后输出到 logger（避免 io.Pipe 无缓冲
 	// 导致 ffmpeg 写阻塞 + logger 回调抢 m.mu.Lock 时链式阻塞）
 	var stderrBuf bytes.Buffer
