@@ -1150,8 +1150,12 @@ func (d *Downloader) merge(ctx context.Context, p *m3u8.Playlist, output string)
 		}
 		genCmd := exec.CommandContext(ctx, d.cfg.FFmpegPath,
 			"-y",
-			"-f", "lavfi", "-i", fmt.Sprintf("color=size=1280x720:rate=25:duration=%.3f:color=black", dur),
+			"-f", "lavfi", "-i", "color=c=black:s=1280x720:r=25",
 			"-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+			// -t 强制总时长：某些 ffmpeg 版本不认 color 的 duration= 参数，会退化成无限时长，
+			// 导致黑场编码一直卡住（CPU 长时间跑到 100%、merge 永不进入 concat）。
+			// 用 -t 明确截断，无论 color/音频来源时长如何，encode 最多 dur 秒必定结束。
+			"-t", fmt.Sprintf("%.4f", dur),
 			"-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
 			"-c:a", "aac", "-b:a", "64k",
 			"-f", "mpegts",
