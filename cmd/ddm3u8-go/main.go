@@ -104,6 +104,5 @@ func main() {
 		}
 		os.Exit(1)
 	}
-	log.Printf("✅ 完成: %s (%d 分片, 失败 %d, 耗时 %s)",
-		result.OutputFile, result.Segments, result.Failed, result.Duration.Truncate(time.Millisecond))
+	log.Printf("✅ 完成: %s", result.OutputFile)
 }

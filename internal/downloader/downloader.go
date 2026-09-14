@@ -416,8 +416,8 @@ func (d *Downloader) Run(ctx context.Context) (*Result, error) {
 	}
 	result.OutputFile = output
 	result.Duration = time.Since(start)
-	d.logger("完成: %s (%d 分片, 失败 %d, 耗时 %s)",
-		output, result.Segments, result.Failed, result.Duration.Truncate(time.Millisecond))
+	// 简洁完成日志（详细分片/耗时由 web 端的 [下载摘要] 单独展示）
+	d.logger("完成: %s", output)
 	d.progressMu.Lock()
 	d.progress.OutputFile = output
 	d.progress.Done = result.Segments - result.Failed
