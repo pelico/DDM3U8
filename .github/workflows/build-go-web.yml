@@ -71,6 +71,35 @@ jobs:
             --push \
             .
 
+  # ---------- 把三架构最新镜像聚合成固定的多架构 tag（ghcr.io/..:go-web） ----------
+  # 之前 :go-web 无后缀 tag 从不随 workflow 更新，导致用户 pull 到的始终是旧版 Web UI。
+  # tag 触发时用 imagetools create 把三个单架构 tag 合并成一个多架构清单，让 :go-web 永远指向最新。
+  merge-go-web:
+    runs-on: ubuntu-latest
+    needs: single-arch
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Merge to multi-arch tag :go-web
+        run: |
+          docker buildx imagetools create \
+            --tag ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:go-web \
+            ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:go-web-amd64 \
+            ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:go-web-arm64 \
+            ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:go-web-armv7l
+
   # ---------- Docker 镜像 tar 包（三架构，docker load 加载，不依赖 pull 选架构） ----------
   tars:
     runs-on: ubuntu-latest
