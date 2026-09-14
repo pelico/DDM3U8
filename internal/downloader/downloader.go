@@ -1208,14 +1208,21 @@ func (d *Downloader) merge(ctx context.Context, p *m3u8.Playlist, output string)
 
 // catSegments 顺序把多个 mpegts 分片二进制拼接成单个 .ts（内存 O(1)、纯顺序 IO）。
 // 替代 concat demuxer 对几千分片的逐段缓冲，显著降低合并时的峰值内存。
+// 拼接是纯文件拷贝、不经过 ffmpeg，因此阶段内定期输出进度，避免"看着像卡住"。
 func (d *Downloader) catSegments(segFiles []string, dest string) error {
 	dst, err := os.Create(dest)
 	if err != nil {
 		return err
 	}
 	defer dst.Close()
+	total := len(segFiles)
+	if total > 0 {
+		d.logger("拼接分片(纯拷贝，无ffmpeg进程): 0/%d", total)
+	}
 	buf := make([]byte, 4*1024*1024)
-	for _, f := range segFiles {
+	// 每 200 片刷一次进度，避免刷屏
+	lastLog := time.Now()
+	for i, f := range segFiles {
 		src, err := os.Open(f)
 		if err != nil {
 			return fmt.Errorf("cat open %s: %w", f, err)
@@ -1224,6 +1231,12 @@ func (d *Downloader) catSegments(segFiles []string, dest string) error {
 		src.Close()
 		if err != nil {
 			return fmt.Errorf("cat copy %s: %w", f, err)
+		}
+		if i%200 == 199 || i == total-1 {
+			if time.Since(lastLog) >= time.Second || i == total-1 {
+				d.logger("拼接分片: %d/%d", i+1, total)
+				lastLog = time.Now()
+			}
 		}
 	}
 	return nil
