@@ -207,7 +207,9 @@ func (m *TaskManager) schedule() {
 func (m *TaskManager) runTask(t *Task) {
 	ctx, cancel := context.WithCancel(context.Background())
 	// 进度日志节流时间戳（原子读写，避免每个分片都抢 m.mu）
-	var lastProgressNanos int64
+	// 用 atomic.Int64 而不是裸 int64：32-bit ARM 上 int64 栈变量不能保证 8 字节对齐，
+	// 裸 atomic.LoadInt64/CompareAndSwapInt64 会触发同样的 unaligned 64-bit atomic panic。
+	var lastProgressNanos atomic.Int64
 
 	m.mu.Lock()
 	t.cancel = cancel
@@ -223,12 +225,12 @@ func (m *TaskManager) runTask(t *Task) {
 		// 节流后只在 500ms 间隔才抢一次 m.mu，CPU 大幅下降。
 		if strings.HasPrefix(msg, "progress ") {
 			now := time.Now().UnixNano()
-			last := atomic.LoadInt64(&lastProgressNanos)
+			last := lastProgressNanos.Load()
 			if now-last < int64(500*time.Millisecond) {
 				return // 节流命中，不抢任何锁
 			}
 			// CAS 抢刷新权，避免多个 goroutine 同时写 t.Log
-			if !atomic.CompareAndSwapInt64(&lastProgressNanos, last, now) {
+			if !lastProgressNanos.CompareAndSwap(last, now) {
 				return
 			}
 			var done, total, failed int
@@ -1154,7 +1156,7 @@ func (m *TaskManager) LoadTasks() {
 		t := &Task{
 			ID: r.ID, Name: r.Name, URL: r.URL, Status: r.Status,
 			Log: r.Log, cmd: r.Cmd, OutputFile: r.OutputFile,
-			CreatedAt: r.CreatedAt,
+			CreatedAt:   r.CreatedAt,
 			DownloadDir: r.DownloadDir, TempDir: r.TempDir,
 			Headers: r.Headers, FolderTarget: r.FolderTarget,
 			AudioTarget: r.AudioTarget,

@@ -81,8 +81,8 @@ func DefaultConfig() Config {
 		Fingerprint:    "chrome",
 		UserAgent:      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
 		FFmpegPath:     "ffmpeg",
-		BestEffort:     true,           // 默认开：跑到所有分片都试过再决定
-		MaxFailureRate: 0.05,           // 允许 5% 分片失败（CDN 偶发拒绝容错）
+		BestEffort:     true, // 默认开：跑到所有分片都试过再决定
+		MaxFailureRate: 0.05, // 允许 5% 分片失败（CDN 偶发拒绝容错）
 	}
 }
 
@@ -130,7 +130,11 @@ type Downloader struct {
 
 	// 已下载字节数（含断点续传预扫描的已存在分片）
 	// 用于估算最终文件大小：平均分片大小 × 总数
-	downloadedBytes int64
+	// 必须用 atomic.Int64 而不是裸 int64 + atomic.AddInt64：
+	// 32-bit ARM 上裸 int64 的 atomic 操作要求 8 字节对齐，而 Downloader 是个大 struct，
+	// 字段顺序排下来 int64 经常落在 4-byte 对齐的地址，触发 "panic: unaligned 64-bit atomic operation"。
+	// atomic.Int64 内部用 _align64 padding 保证 8 字节对齐，32/64 位都安全（Go 1.19+ 类型化原子）。
+	downloadedBytes atomic.Int64
 
 	// 速度计算：滑动窗口记录最近完成的分片
 	// 用最近若干分片的总大小/总时长算当前下载速度
@@ -336,7 +340,7 @@ func (d *Downloader) Run(ctx context.Context) (*Result, error) {
 			}
 		}
 		if existing > 0 {
-			atomic.StoreInt64(&d.downloadedBytes, existingBytes)
+			d.downloadedBytes.Store(existingBytes)
 			d.progressMu.Lock()
 			d.progress.Done = existing
 			d.progressMu.Unlock()
@@ -386,7 +390,7 @@ func (d *Downloader) Run(ctx context.Context) (*Result, error) {
 		// 显式打 log 让前端的 t.Log 同步显示"合并中..."，否则会卡在最后一条
 		// "下载中: X/X (100%)" 看上去像挂住，老镜像的已知问题。
 		// 同时给前端一个估算的输出大小（用已下载字节推算），让进度条合理
-		estBytes := atomic.LoadInt64(&d.downloadedBytes)
+		estBytes := d.downloadedBytes.Load()
 		d.logger("合并中: %s (%d 分片, 预估 %s)...",
 			filepath.Base(output), result.Segments, humanBytes(estBytes))
 		if err := d.merge(ctx, playlist, output); err != nil {
@@ -878,7 +882,7 @@ func (d *Downloader) downloadSegments(ctx context.Context, p *m3u8.Playlist, key
 			var segBytes int64
 			if info, err := os.Stat(outPath); err == nil {
 				segBytes = info.Size()
-				atomic.AddInt64(&d.downloadedBytes, segBytes)
+				d.downloadedBytes.Add(segBytes)
 			}
 			// 计算当前下载速度（滑动窗口）
 			speed := d.recordSpeed(segBytes)
@@ -889,7 +893,7 @@ func (d *Downloader) downloadSegments(ctx context.Context, p *m3u8.Playlist, key
 			snap := d.progress
 			d.progressMu.Unlock()
 			// 用 "progress done/total/failed/bytes/speed" 格式，上层据此前缀做节流展示
-			bytes := atomic.LoadInt64(&d.downloadedBytes)
+			bytes := d.downloadedBytes.Load()
 			d.logger("progress %d/%d/%d/%d/%.0f", snap.Done, snap.Total, snap.Failed, bytes, speed)
 		}
 	}
@@ -1194,7 +1198,11 @@ func (d *Downloader) merge(ctx context.Context, p *m3u8.Playlist, output string)
 		stdinPusher = func() error { return d.pushSegmentsToStdin(cmd, segFiles) }
 	}
 
-	cmd.Stderr = os.Stderr
+	// 捕获 ffmpeg stderr 到 buffer；失败时把 ffmpeg 的真实报错拼到 err 里
+	// （避免"exit status 234"这种完全没法诊断的裸错误码）
+	// 同时 multi-write 到 os.Stderr，本地 docker 部署时也能直接看到日志
+	var stderrBuf bytes.Buffer
+	cmd.Stderr = io.MultiWriter(&stderrBuf, os.Stderr)
 
 	pr, pw := io.Pipe()
 	cmd.Stdout = pw
@@ -1215,13 +1223,51 @@ func (d *Downloader) merge(ctx context.Context, p *m3u8.Playlist, output string)
 		if werr := <-done; werr != nil && err == nil {
 			err = fmt.Errorf("feed segments to ffmpeg: %w", werr)
 		}
+	} else {
+		err = cmd.Wait()
+		pw.Close()
+		pr.Close()
+	}
+	if err != nil {
+		err = wrapFFmpegErr(err, &stderrBuf)
+		// 关键报错全量打 logger（Web 端日志完整可见），方便诊断
+		d.dumpFFmpegLog(&stderrBuf)
+	}
+	return err
+}
+
+// wrapFFmpegErr 把 ffmpeg 进程错误 + stderr 内容组合成一个可读的错误
+// ffmpeg 失败时 cmd.Wait() 返回的 err 只含 exit code（甚至是非标准的 234），
+// 必须把 stderr 里的真错信息拼进去才能定位。
+func wrapFFmpegErr(err error, stderrBuf *bytes.Buffer) error {
+	es := strings.TrimSpace(stderrBuf.String())
+	if es == "" {
 		return err
 	}
+	// 抽 stderr 最后一两行关键信息（ffmpeg 错误通常在末尾）
+	lines := strings.Split(es, "\n")
+	tail := es
+	if len(lines) > 6 {
+		tail = strings.Join(lines[len(lines)-6:], "\n")
+	}
+	// 限制单行长度，避免 4K 错误日志塞进任务 status 字段
+	if len(tail) > 600 {
+		tail = tail[len(tail)-600:]
+	}
+	return fmt.Errorf("%w; ffmpeg stderr (tail): %s", err, tail)
+}
 
-	err = cmd.Wait()
-	pw.Close()
-	pr.Close()
-	return err
+// dumpFFmpegLog 把 ffmpeg stderr 完整输出到 logger（每行一条），方便诊断
+func (d *Downloader) dumpFFmpegLog(stderrBuf *bytes.Buffer) {
+	es := strings.TrimSpace(stderrBuf.String())
+	if es == "" {
+		return
+	}
+	for _, line := range strings.Split(es, "\n") {
+		if line != "" {
+			d.logger("ffmpeg: %s", line)
+		}
+	}
 }
 
 // pushSegmentsToStdin 顺序读取 segFiles 中的所有 mpegts 分片并写入 ffmpeg stdin。
@@ -1469,15 +1515,9 @@ func (d *Downloader) MergeOnly(ctx context.Context, tempDir, output string) erro
 		pr.Close()
 	}
 	// 合并完成后输出 ffmpeg 日志（最后 20 行，避免过长）
-	lines := strings.Split(strings.TrimSpace(stderrBuf.String()), "\n")
-	start := 0
-	if len(lines) > 20 {
-		start = len(lines) - 20
-	}
-	for _, line := range lines[start:] {
-		if line != "" {
-			d.logger("ffmpeg: %s", line)
-		}
+	d.dumpFFmpegLog(&stderrBuf)
+	if err != nil {
+		err = wrapFFmpegErr(err, &stderrBuf)
 	}
 	return err
 }
