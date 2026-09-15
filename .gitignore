@@ -17,6 +17,13 @@ venv/
 tmp/
 temp/
 
+# Go build outputs (cross-compile artifacts; dist/ tarballs are committed by release workflow)
+# 用 / 锚定仓库根，避免误匹配 cmd/ddm3u8-web 这种源码目录
+/ddm3u8-go
+/ddm3u8-web
+/out/
+/dist/
+
 # IDE
 .idea/
 .vscode/

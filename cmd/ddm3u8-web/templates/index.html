@@ -39,8 +39,132 @@
             min-height: 100vh;
             -webkit-font-smoothing: antialiased;
             -moz-osx-font-smoothing: grayscale;
+            transition: background .2s, color .2s;
         }
-        .container { max-width: 880px; margin: 0 auto; padding: 22px 18px 64px; }
+        .container { max-width: 880px; margin: 0 auto; padding: 22px 18px 96px; }
+        /* 桌面端放宽：1920 显示器上 880px 两侧留白太严重 */
+        @media (min-width: 1100px) {
+            .container { max-width: 1200px; padding: 28px 24px 96px; }
+        }
+        @media (min-width: 1600px) {
+            .container { max-width: 1400px; padding: 32px 32px 96px; }
+        }
+
+        /* ============ 暗色主题 ============ */
+        /* 通过 data-theme=dark 覆盖 :root 变量，无需重写组件样式 */
+        [data-theme="dark"] {
+            --bg: #0f1219;
+            --surface: #181c25;
+            --surface-2: #1f2531;
+            --border: #2a3140;
+            --border-strong: #3a4252;
+            --primary: #818cf8;
+            --primary-hover: #6366f1;
+            --primary-soft: rgba(129,140,248,.16);
+            --text: #e5e7eb;
+            --muted: #9ca3af;
+            --faint: #6b7280;
+            --success: #34d399;
+            --success-soft: rgba(52,211,153,.16);
+            --warning: #fbbf24;
+            --warning-soft: rgba(251,191,36,.16);
+            --danger: #f87171;
+            --danger-soft: rgba(248,113,113,.16);
+            --merge: #a78bfa;
+            --merge-soft: rgba(167,139,250,.16);
+            --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.32);
+            --shadow-hover: 0 2px 4px rgba(0,0,0,.45), 0 14px 30px rgba(0,0,0,.4);
+        }
+        /* 暗色模式下的全局边框/阴影微调 */
+        [data-theme="dark"] .progress-bar { background: #242a36; }
+        [data-theme="dark"] .brand-logo { box-shadow: 0 6px 14px rgba(99,102,241,.4); }
+        [data-theme="dark"] ::placeholder { color: #6b7280 !important; }
+        [data-theme="dark"] input[type="text"]:focus,
+        [data-theme="dark"] input[type="number"]:focus,
+        [data-theme="dark"] select:focus,
+        [data-theme="dark"] textarea.input-full:focus {
+            box-shadow: 0 0 0 3px rgba(129,140,248,.18);
+        }
+        /* 暗色模式下的 status 类微调，避免深底看不清 */
+        [data-theme="dark"] .status-running { color: #a5b4fc; }
+        [data-theme="dark"] .status-error { color: #fca5a5; }
+
+        /* ============ 主题切换按钮 ============ */
+        .theme-toggle {
+            width: 38px; height: 38px; border-radius: 11px;
+            border: 1px solid var(--border);
+            background: var(--surface);
+            color: var(--muted);
+            display: grid; place-items: center;
+            cursor: pointer; flex-shrink: 0;
+            transition: background .15s, color .15s, border-color .15s;
+            font-family: inherit;
+        }
+        .theme-toggle:hover { color: var(--primary); border-color: var(--primary); background: var(--primary-soft); }
+        .theme-toggle svg { width: 17px; height: 17px; }
+        /* 暗色模式下显示"太阳"，亮色模式下显示"月亮" */
+        [data-theme="dark"] .theme-toggle .theme-icon-moon { display: none; }
+        [data-theme="dark"] .theme-toggle .theme-icon-sun { display: block; }
+        [data-theme="light"] .theme-toggle .theme-icon-moon { display: block; }
+        [data-theme="light"] .theme-toggle .theme-icon-sun { display: none; }
+
+        /* ============ CDN 状态徽章 ============ */
+        .cdn-badge {
+            display: inline-flex; align-items: center; gap: 4px;
+            font-size: 10.5px; font-weight: 600;
+            padding: 2px 7px; border-radius: 999px;
+            line-height: 1.4; margin-left: 6px;
+            vertical-align: 1px;
+        }
+        .cdn-badge.cdn-ok   { background: var(--success-soft); color: var(--success); }
+        .cdn-badge.cdn-warn { background: var(--warning-soft); color: var(--warning); }
+        .cdn-badge.cdn-fail { background: var(--danger-soft);  color: var(--danger); }
+        .cdn-badge.cdn-pending { background: var(--surface-2); color: var(--muted); }
+        .cdn-badge .dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+
+        /* ============ 底部悬浮状态条 (status dock) ============ */
+        /* position:fixed 在屏幕底部居中，所有页面都能看见，即使滚动列表 */
+        .status-dock {
+            position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%);
+            display: flex; align-items: center; gap: 0;
+            padding: 7px 6px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            box-shadow: var(--shadow-hover);
+            z-index: 90;
+            max-width: calc(100vw - 24px);
+            overflow-x: auto;
+            scrollbar-width: none;
+            font-family: inherit;
+        }
+        .status-dock::-webkit-scrollbar { display: none; }
+        .status-dock-item {
+            display: inline-flex; align-items: center; gap: 6px;
+            padding: 5px 12px;
+            font-size: 12.5px; font-weight: 600;
+            color: var(--text);
+            border-right: 1px solid var(--border);
+            white-space: nowrap;
+        }
+        .status-dock-item:last-child { border-right: none; }
+        .status-dock-item .ico { color: var(--muted); display: inline-grid; place-items: center; }
+        .status-dock-item .ico svg { width: 13px; height: 13px; }
+        .status-dock-item .num {
+            font-family: "Cascadia Mono", "SF Mono", Consolas, monospace;
+            font-size: 12.5px;
+            color: var(--primary);
+            font-weight: 650;
+        }
+        .status-dock-item .num.peak { color: var(--warning); }
+        .status-dock-item .num.idle { color: var(--muted); }
+        /* 移动端：缩小间距，避免挡住下方按钮 */
+        @media (max-width: 600px) {
+            .status-dock { bottom: 10px; }
+            .status-dock-item { padding: 4px 9px; font-size: 11.5px; gap: 4px; }
+            .status-dock-item .num { font-size: 11.5px; }
+            .status-dock-item .ico svg { width: 12px; height: 12px; }
+        }
 
         /* ---------- 顶部条 ---------- */
         .topbar {
@@ -192,6 +316,15 @@
         .progress-col { width: 330px; min-width: 240px; }
         .status-action-col { width: 210px; }
         .name-cell { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        /* 桌面端任务名列也放宽，否则文件名容易截断 */
+        @media (min-width: 1100px) {
+            .name-cell { max-width: 380px; }
+            .progress-col { width: 400px; }
+        }
+        @media (min-width: 1600px) {
+            .name-cell { max-width: 480px; }
+            .progress-col { width: 460px; }
+        }
         .checkbox { width: 16px; height: 16px; cursor: pointer; accent-color: var(--primary); }
         .status-action-cell { vertical-align: middle; }
         .status-action-wrapper { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
@@ -236,6 +369,59 @@
         }
         .batch-info { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 14px; }
         .batch-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+        .filter-bar {
+            display: flex; gap: 6px; flex-wrap: wrap;
+            padding: 0 0 14px 0;
+            margin-bottom: 6px;
+            border-bottom: 1px dashed var(--border);
+        }
+        .filter-chip {
+            display: inline-flex; align-items: center; gap: 6px;
+            padding: 6px 12px;
+            border-radius: 999px;
+            border: 1px solid var(--border);
+            background: var(--surface-2);
+            color: var(--muted);
+            font-size: 12.5px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            user-select: none;
+            font-family: inherit;
+        }
+        .filter-chip:hover { border-color: var(--primary); color: var(--text); }
+        .filter-chip.active {
+            background: var(--primary-soft);
+            border-color: var(--primary);
+            color: var(--primary);
+            font-weight: 600;
+        }
+        .filter-chip.active.filter-chip-danger {
+            background: var(--danger-soft);
+            border-color: var(--danger);
+            color: var(--danger);
+        }
+        .filter-chip .chip-count {
+            display: inline-block;
+            min-width: 20px;
+            padding: 0 6px;
+            border-radius: 999px;
+            background: var(--surface);
+            color: var(--muted);
+            font-size: 11px;
+            text-align: center;
+            line-height: 18px;
+        }
+        .filter-chip.active .chip-count { background: var(--primary); color: white; }
+        .filter-chip.active.filter-chip-danger .chip-count { background: var(--danger); color: white; }
+        .filter-empty-hint {
+            padding: 30px 16px;
+            text-align: center;
+            color: var(--muted);
+            font-size: 13px;
+        }
+        .filter-empty-hint .ico { font-size: 24px; margin-bottom: 6px; }
 
         .worker-status {
             display: inline-flex; align-items: center; gap: 7px;
@@ -296,6 +482,9 @@
             .batch-info { font-size: 12px; gap: 10px; }
             .progress-bar { height: 5px; }
             .progress-text { font-size: 11px; }
+            .filter-bar { overflow-x: auto; flex-wrap: nowrap; padding-bottom: 10px; margin-left: -18px; margin-right: -18px; padding-left: 18px; padding-right: 18px; }
+            .filter-bar::-webkit-scrollbar { height: 4px; }
+            .filter-chip { flex-shrink: 0; }
         }
     </style>
 </head>
@@ -313,7 +502,25 @@
                     <div class="brand-sub">任务队列 · 断点恢复 · 本地缓存合并</div>
                 </div>
             </div>
-            <div id="workerStatus" class="worker-status"><span class="dot"></span>运行中: 0/3</div>
+            <div style="display:flex; align-items:center; gap:10px;">
+                <div id="workerStatus" class="worker-status"><span class="dot"></span>运行中: 0/3</div>
+                <button id="themeToggle" class="theme-toggle" type="button" title="切换主题">
+                    <svg class="theme-icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+                    </svg>
+                    <svg class="theme-icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="12" cy="12" r="5"></circle>
+                        <line x1="12" y1="1" x2="12" y2="3"></line>
+                        <line x1="12" y1="21" x2="12" y2="23"></line>
+                        <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+                        <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+                        <line x1="1" y1="12" x2="3" y2="12"></line>
+                        <line x1="21" y1="12" x2="23" y2="12"></line>
+                        <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+                        <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+                    </svg>
+                </button>
+            </div>
         </div>
 
         <!-- 添加下载 -->
@@ -424,6 +631,16 @@
                 </h3>
             </div>
 
+            <div id="filterBar" class="filter-bar">
+                <button class="filter-chip active" data-filter="all" type="button">全部 <span class="chip-count" id="filterCountAll">0</span></button>
+                <button class="filter-chip" data-filter="active" type="button">进行中 <span class="chip-count" id="filterCountActive">0</span></button>
+                <button class="filter-chip" data-filter="queued" type="button">排队中 <span class="chip-count" id="filterCountQueued">0</span></button>
+                <button class="filter-chip" data-filter="done" type="button">已完成 <span class="chip-count" id="filterCountDone">0</span></button>
+                <button class="filter-chip filter-chip-danger" data-filter="failed" type="button">失败 <span class="chip-count" id="filterCountFailed">0</span></button>
+                <button class="filter-chip" data-filter="paused" type="button">已暂停 <span class="chip-count" id="filterCountPaused">0</span></button>
+                <button class="filter-chip" data-filter="canceled" type="button">已取消 <span class="chip-count" id="filterCountCanceled">0</span></button>
+            </div>
+
             <div id="batchBar" class="batch-bar" style="display: none;">
                 <div class="batch-info">
                     <label><input type="checkbox" id="selectAll" onchange="toggleSelectAllFromBatch()" class="checkbox"> 全选</label>
@@ -513,7 +730,113 @@
         </div>
     </div>
 
+    <!-- 底部悬浮状态条：实时显示运行/排队/速度/峰值，独立于页面滚动 -->
+    <div class="status-dock" id="statusDock" role="status" aria-live="polite">
+        <span class="status-dock-item" title="正在下载/合并的任务数">
+            <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></span>
+            <span>运行</span>
+            <span class="num" id="dockActive">0</span><span style="color:var(--muted);font-weight:500;">/</span><span class="num idle" id="dockMax">0</span>
+        </span>
+        <span class="status-dock-item" title="排队中尚未开始的任务数">
+            <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg></span>
+            <span>排队</span>
+            <span class="num idle" id="dockQueued">0</span>
+        </span>
+        <span class="status-dock-item" title="所有任务合计的当前下载速度（30s 滑动窗口）">
+            <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></span>
+            <span>速度</span>
+            <span class="num" id="dockSpeed">0 B/s</span>
+        </span>
+        <span class="status-dock-item" title="本进程启动以来的最高瞬时速度">
+            <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></span>
+            <span>峰值</span>
+            <span class="num peak" id="dockPeak">0 B/s</span>
+        </span>
+    </div>
+
     <script>
+        // ============ 主题（暗色 / 亮色）============
+        // 启动时优先用 localStorage 保存的选择，否则跟随系统 prefers-color-scheme
+        const THEME_KEY = 'ddm3u8_theme';
+        function applyTheme(theme) {
+            document.documentElement.setAttribute('data-theme', theme);
+            try { localStorage.setItem(THEME_KEY, theme); } catch (e) {}
+        }
+        function initTheme() {
+            let saved = null;
+            try { saved = localStorage.getItem(THEME_KEY); } catch (e) {}
+            if (saved === 'light' || saved === 'dark') {
+                applyTheme(saved);
+                return;
+            }
+            if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+                applyTheme('dark');
+            } else {
+                applyTheme('light');
+            }
+        }
+        initTheme();
+        document.getElementById('themeToggle').addEventListener('click', function() {
+            const cur = document.documentElement.getAttribute('data-theme') || 'light';
+            applyTheme(cur === 'light' ? 'dark' : 'light');
+        });
+
+        // ============ 字节数格式化（前端复用）============
+        function formatBytes(n) {
+            if (!n || n <= 0) return '0 B';
+            const u = 1024;
+            if (n < u) return n + ' B';
+            let div = u, exp = 0;
+            for (let v = n / u; v >= u; v /= u) { div *= u; exp++; }
+            return (n / div).toFixed(1) + ' ' + 'KMGTPE'[exp] + 'B';
+        }
+
+        // ============ 状态条（status dock）轮询 ============
+        // 独立于 /api/tasks，每 1.5s 拉一次 /api/stats，开销很小（不返回 tasks）
+        // 任何空闲/错误状态都能正确显示数字——包括 0
+        const STATS_REFRESH_INTERVAL = 1500;
+        let statsInFlight = false;
+        let statsTimer = null;
+        async function refreshStats() {
+            if (document.hidden) return;
+            if (statsInFlight) return;
+            statsInFlight = true;
+            try {
+                const resp = await apiFetch('/api/stats');
+                const s = await resp.json();
+                document.getElementById('dockActive').textContent = s.active_workers || 0;
+                document.getElementById('dockMax').textContent = s.max_workers || 0;
+                document.getElementById('dockQueued').textContent = s.queued_tasks || 0;
+                document.getElementById('dockSpeed').textContent = formatBytes(s.current_speed || 0) + '/s';
+                document.getElementById('dockPeak').textContent = formatBytes(s.peak_speed || 0) + '/s';
+                // 没在跑的时候速度数字变灰
+                document.getElementById('dockSpeed').classList.toggle('idle', !(s.current_speed > 0));
+            } catch (e) {
+                // 网络异常不刷数字，保持上一次值
+            } finally {
+                statsInFlight = false;
+                if (statsTimer) clearTimeout(statsTimer);
+                statsTimer = setTimeout(refreshStats, STATS_REFRESH_INTERVAL);
+            }
+        }
+        refreshStats();
+
+        // ============ CDN 状态徽章渲染 ============
+        // prewarm_status: ok / warn / fail / pending
+        // prewarm_ms: 测速耗时（毫秒，<=0 表示没测到）
+        function cdnBadgeHtml(t) {
+            const s = t.prewarm_status;
+            if (!s) return '';
+            const ms = (t.prewarm_ms || 0);
+            let label = '', cls = 'cdn-pending';
+            if (s === 'ok')   { label = 'CDN✓ ' + (ms > 0 ? ms + 'ms' : 'OK');   cls = 'cdn-ok'; }
+            else if (s === 'warn') { label = 'CDN⚠ ' + (ms > 0 ? ms + 'ms' : '4xx'); cls = 'cdn-warn'; }
+            else if (s === 'fail') { label = 'CDN✗ ' + (ms > 0 ? ms + 'ms' : '超时'); cls = 'cdn-fail'; }
+            else { label = 'CDN…'; cls = 'cdn-pending'; }
+            const host = t.prewarm_host ? escapeHtml(t.prewarm_host) : '';
+            return `<span class="cdn-badge ${cls}" title="${host ? 'CDN 主机：' + host : 'CDN 测速中'}"><span class="dot"></span>${label}</span>`;
+        }
+
         let selectedTasks = new Set();
         let taskProgressCache = {};
         let refreshInFlight = false;
@@ -521,6 +844,34 @@
         let isScrolling = false;
         let scrollTimeout = null;
         let selectedVideoFiles = new Set();
+
+        // 任务状态筛选
+        const ACTIVE_STATUSES = ['下载中', '合并中', '转换中', '等待FFmpeg'];
+        const FILTER_STATUS_MAP = {
+            all: null,
+            active: ACTIVE_STATUSES,
+            queued: ['排队中'],
+            done: ['已完成'],
+            failed: ['失败'],
+            paused: ['已暂停'],
+            canceled: ['已取消'],
+        };
+        let currentFilter = 'all';
+        function matchesFilter(status) {
+            const allowed = FILTER_STATUS_MAP[currentFilter];
+            if (!allowed) return true;
+            return allowed.includes(status);
+        }
+        function setFilter(key) {
+            currentFilter = key;
+            document.querySelectorAll('.filter-chip').forEach(c => {
+                c.classList.toggle('active', c.dataset.filter === key);
+            });
+            refreshNow();
+        }
+        document.querySelectorAll('.filter-chip').forEach(c => {
+            c.addEventListener('click', () => setFilter(c.dataset.filter));
+        });
         let videoFilesData = [];
         const ACTIVE_REFRESH_INTERVAL = 2000;
         const IDLE_REFRESH_INTERVAL = 10000;
@@ -937,10 +1288,32 @@
                 selectedTasks.forEach(taskId => {
                     if (!taskIds.includes(taskId)) selectedTasks.delete(taskId);
                 });
-                
+
+                // 统计各状态数量 → 更新筛选 chip 数字
+                const counts = { all: taskIds.length, active: 0, queued: 0, done: 0, failed: 0, paused: 0, canceled: 0 };
+                for (let id of taskIds) {
+                    const s = data.tasks[id].status;
+                    if (ACTIVE_STATUSES.includes(s)) counts.active++;
+                    if (s === '排队中') counts.queued++;
+                    else if (s === '已完成' || s === '完成(强合)' || s === '完成(音频)') counts.done++;
+                    else if (s === '失败' || s === '任务错误' || s === '错误') counts.failed++;
+                    else if (s === '已暂停' || s === '已中断') counts.paused++;
+                    else if (s === '已取消') counts.canceled++;
+                }
+                document.getElementById('filterCountAll').textContent = counts.all;
+                document.getElementById('filterCountActive').textContent = counts.active;
+                document.getElementById('filterCountQueued').textContent = counts.queued;
+                document.getElementById('filterCountDone').textContent = counts.done;
+                document.getElementById('filterCountFailed').textContent = counts.failed;
+                document.getElementById('filterCountPaused').textContent = counts.paused;
+                document.getElementById('filterCountCanceled').textContent = counts.canceled;
+
+                // 按当前筛选过滤
+                const visibleIds = taskIds.filter(id => matchesFilter(data.tasks[id].status));
+
                 if (taskIds.length === 0) {
                     requestAnimationFrame(() => {
-                        document.getElementById('taskList').innerHTML = 
+                        document.getElementById('taskList').innerHTML =
                             '<tr><td colspan="4" class="empty-state"><div class="empty-icon">📋</div>暂无任务记录</td></tr>';
                         document.getElementById('batchBar').style.display = 'none';
                     });
@@ -948,8 +1321,16 @@
                     return;
                 }
 
+                if (visibleIds.length === 0) {
+                    requestAnimationFrame(() => {
+                        document.getElementById('taskList').innerHTML =
+                            '<tr><td colspan="4"><div class="filter-empty-hint"><div class="ico">🔍</div>当前筛选下暂无任务</div></td></tr>';
+                    });
+                    return;
+                }
+
                 let html = '';
-                for (let id of taskIds) {
+                for (let id of visibleIds) {
                     let t = data.tasks[id];
                     let progress = getProgress(t.log);
                     const safeId = escapeHtml(id);
@@ -1023,7 +1404,7 @@
                     html += `
                     <tr>
                         <td><input type="checkbox" class="task-checkbox" data-task-id="${safeId}" onchange="toggleTaskSelect(this.dataset.taskId, this)" ${selectedTasks.has(id) ? 'checked' : ''}></td>
-                        <td title="${safeName}">${safeName}</td>
+                        <td title="${safeName}"><span class="name-cell" style="display:inline-block; vertical-align:middle;">${safeName}</span>${cdnBadgeHtml(t)}</td>
                         <td class="status-action-cell"><div class="status-action-wrapper"><span class="status ${statusClass}">${safeStatus}</span>${btns}</div></td>
                         <td>
                             <div class="progress-bar"><div class="progress-fill" style="width:${Math.min(displayPercent, 100)}%"></div></div>
@@ -1063,8 +1444,13 @@
                     clearTimeout(refreshTimer);
                     refreshTimer = null;
                 }
+                if (statsTimer) {
+                    clearTimeout(statsTimer);
+                    statsTimer = null;
+                }
             } else {
                 refreshNow();
+                refreshStats();
             }
         });
 

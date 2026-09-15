@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -55,6 +57,13 @@ type Task struct {
 	Headers      map[string]string `json:"headers,omitempty"`
 	FolderTarget string            `json:"folder_target,omitempty"`
 	AudioTarget  *AudioTarget      `json:"audio_target,omitempty"`
+
+	// CDN 预热结果（任务开始前对 m3u8 主机做 HEAD 测试）
+	// PrewarmStatus: "unknown"(未测) / "ok"(200) / "warn"(>=400但<500) / "fail"(网络错误或5xx)
+	// PrewarmMs: HEAD 请求耗时（毫秒，<=0 表示测速失败）
+	PrewarmStatus string `json:"prewarm_status,omitempty"`
+	PrewarmMs     int64  `json:"prewarm_ms,omitempty"`
+	PrewarmHost   string `json:"prewarm_host,omitempty"`
 }
 
 // AudioTarget 音频提取任务的目标文件对（与 Python 版 audio_target 同形）
@@ -88,6 +97,141 @@ type TaskManager struct {
 	listCacheAt     time.Time
 	listCacheVideos []map[string]interface{}
 	listCacheFolds  []string
+
+	// 全局下载速度统计：聚合所有活跃 downloader 的瞬时速度。
+	// 设计要点：
+	//   - 每个 downloader 自己维持 30s 滑动窗口算自己的瞬时速度
+	//   - TaskManager 维持一个全局滑动窗口，按"段结束时间"插样本，每次有分片完成
+	//     就 push 一条 (at=now, bytes=segBytes) 到 samples
+	//   - 当前总速度 = samples 中 30s 窗口内总字节 / 30s
+	//   - 峰值速度 = 历史所有样本中算出的最大值，启动后单调不减
+	// 用 mutex（不常用，锁粒度只覆盖 30s 窗口操作）即可，没必要上 atomic。
+	speedMu       sync.Mutex
+	speedSamples  []speedSample
+	speedPeak     float64 // B/s，启动后单调不减
+	speedPeakAt   time.Time
+	speedStartMon time.Time // 首次有样本的时间（用于过滤启动期的瞬时尖峰）
+}
+
+// speedSample 全局速度窗口的一个样本：某时刻完成了一段，共若干字节
+type speedSample struct {
+	at    time.Time
+	bytes int64
+}
+
+// 速度窗口宽度：最近 30 秒累计字节 / 30 秒 = 当前 B/s
+const speedWindow = 30 * time.Second
+
+// recordGlobalSpeed 由 TaskManager 在 downloader 上报分片完成时调用。
+// 把 segBytes 在 now 时累入窗口，30s 之外的样本丢弃，
+// 同时按窗口算一次"当前总速度"，超过历史峰值则更新峰值。
+func (m *TaskManager) recordGlobalSpeed(segBytes int64) {
+	if segBytes <= 0 {
+		return
+	}
+	m.speedMu.Lock()
+	defer m.speedMu.Unlock()
+	now := time.Now()
+	m.speedSamples = append(m.speedSamples, speedSample{at: now, bytes: segBytes})
+	cutoff := now.Add(-speedWindow)
+	idx := 0
+	for ; idx < len(m.speedSamples); idx++ {
+		if m.speedSamples[idx].at.After(cutoff) {
+			break
+		}
+	}
+	if idx > 0 {
+		m.speedSamples = m.speedSamples[idx:]
+	}
+	// 启动后 1 秒内不更新峰值（避免初始一两个分片瞬间出"虚假峰值"）
+	if m.speedStartMon.IsZero() {
+		m.speedStartMon = now
+	}
+	if now.Sub(m.speedStartMon) < time.Second {
+		return
+	}
+	if len(m.speedSamples) < 2 {
+		return
+	}
+	var total int64
+	for _, s := range m.speedSamples {
+		total += s.bytes
+	}
+	dur := m.speedSamples[len(m.speedSamples)-1].at.Sub(m.speedSamples[0].at).Seconds()
+	if dur <= 0 {
+		return
+	}
+	cur := float64(total) / dur
+	if cur > m.speedPeak {
+		m.speedPeak = cur
+		m.speedPeakAt = now
+	}
+}
+
+// StatsSnapshot 暴露给前端的全局状态快照（/api/stats 用）
+type StatsSnapshot struct {
+	ActiveWorkers int     `json:"active_workers"`  // 当前正在下载/合并/转换的任务数
+	MaxWorkers    int     `json:"max_workers"`     // 并发上限
+	QueuedTasks   int     `json:"queued_tasks"`    // 排队中的任务数
+	CurrentSpeed  float64 `json:"current_speed"`   // 当前总下载速度 B/s
+	PeakSpeed     float64 `json:"peak_speed"`      // 历史峰值 B/s
+	PeakAt        string  `json:"peak_at,omitempty"` // 峰值发生时间（RFC3339，空=未发生）
+}
+
+// Stats 返回全局状态快照（goroutine-safe）
+func (m *TaskManager) Stats() StatsSnapshot {
+	m.mu.RLock()
+	active, queued := 0, 0
+	for _, id := range m.order {
+		t := m.tasks[id]
+		switch t.Status {
+		case StatusDownload, StatusMerge:
+			active++
+		case StatusQueued:
+			queued++
+		}
+	}
+	m.mu.RUnlock()
+
+	m.speedMu.Lock()
+	now := time.Now()
+	cutoff := now.Add(-speedWindow)
+	// 清理过期样本
+	idx := 0
+	for ; idx < len(m.speedSamples); idx++ {
+		if m.speedSamples[idx].at.After(cutoff) {
+			break
+		}
+	}
+	if idx > 0 {
+		m.speedSamples = m.speedSamples[idx:]
+	}
+	var currentSpeed float64
+	if len(m.speedSamples) >= 2 {
+		var total int64
+		for _, s := range m.speedSamples {
+			total += s.bytes
+		}
+		dur := m.speedSamples[len(m.speedSamples)-1].at.Sub(m.speedSamples[0].at).Seconds()
+		if dur > 0 {
+			currentSpeed = float64(total) / dur
+		}
+	}
+	peak := m.speedPeak
+	var peakAt string
+	if !m.speedPeakAt.IsZero() {
+		peakAt = m.speedPeakAt.UTC().Format(time.RFC3339)
+	}
+	m.speedMu.Unlock()
+
+	return StatsSnapshot{
+		ActiveWorkers: active,
+		MaxWorkers:    m.maxParallel,
+		QueuedTasks:   queued,
+		CurrentSpeed:  currentSpeed,
+		PeakSpeed:     peak,
+		PeakAt:        peakAt,
+	}
 }
 
 // listCacheTTL 列表缓存有效期。短到能让"新文件"尽快可见，
@@ -162,10 +306,86 @@ func (m *TaskManager) CreateWithDir(url, name string, headers map[string]string,
 	m.order = append([]string{id}, m.order...)
 	m.mu.Unlock()
 
+	// 异步做 CDN 预热（HEAD 测试 m3u8 主机响应时间和状态码）：
+	//   - 给前端一个"CDN 状态"图标显示，避免"先看到失败才知道 CDN 不通"
+	//   - 用独立 goroutine + 短超时（3s），不影响任务正常入队
+	// 测试失败一律不阻塞任务创建（失败只是不显示图标）
+	host := extractHost(url)
+	if host != "" {
+		go m.prewarmCDN(task, host)
+	}
+
 	m.saveTasks() // 持久化：新建任务即落盘
 	go m.schedule()
 
 	return id
+}
+
+// extractHost 从 URL 抽取主机部分（scheme://host/path → host）
+// 出错返回空字符串（调用方据此跳过预热）
+func extractHost(rawURL string) string {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	return u.Host
+}
+
+// prewarmCDN 对 host 做一次 HEAD 测试，记录响应时间和状态码到 task 字段
+// 真实场景 CDN 通常会拒绝 HEAD（403/405），但 TCP 连接 + TLS 握手时间能反映链路质量。
+// timeout 设为 3s，宁可预热失败也不阻塞任务创建。
+func (m *TaskManager) prewarmCDN(t *Task, host string) {
+	if t == nil || host == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	probe := &http.Client{
+		Timeout: 3 * time.Second,
+		// 不跟随重定向：CDN 预热只测链路，不去关心业务跳转
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	probeURL := "https://" + host + "/"
+	req, err := http.NewRequestWithContext(ctx, "HEAD", probeURL, nil)
+	if err != nil {
+		m.updatePrewarm(t, "fail", 0, host)
+		return
+	}
+	// 同样的 User-Agent 与指纹不能保证（downloader 用 uTLS），但通用 UA 即可触发 CDN
+	// bot 检测也能大致反映真实下载路径的"能不能连上 + 多久握手"
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36")
+
+	start := time.Now()
+	resp, err := probe.Do(req)
+	elapsed := time.Since(start).Milliseconds()
+	if err != nil {
+		// 网络层失败（DNS / TCP / TLS / 超时）
+		m.updatePrewarm(t, "fail", elapsed, host)
+		return
+	}
+	_ = resp.Body.Close()
+	switch {
+	case resp.StatusCode >= 200 && resp.StatusCode < 400:
+		m.updatePrewarm(t, "ok", elapsed, host)
+	case resp.StatusCode >= 400 && resp.StatusCode < 500:
+		// 4xx 通常是 HEAD 被拒（405/403），但链路通了 → 标 warn
+		m.updatePrewarm(t, "warn", elapsed, host)
+	default:
+		// 5xx 服务端异常
+		m.updatePrewarm(t, "fail", elapsed, host)
+	}
+}
+
+// updatePrewarm 原子地把预热结果写回 task（m.mu 加锁，保证前端轮询看到一致值）
+func (m *TaskManager) updatePrewarm(t *Task, status string, ms int64, host string) {
+	m.mu.Lock()
+	t.PrewarmStatus = status
+	t.PrewarmMs = ms
+	t.PrewarmHost = host
+	m.mu.Unlock()
 }
 
 // buildCmdString 生成展示用的命令字符串
@@ -254,6 +474,20 @@ func (m *TaskManager) runTask(t *Task) {
 			var bytes int64
 			var speed float64
 			_, _ = fmt.Sscanf(msg, "progress %d/%d/%d/%d/%f", &done, &total, &failed, &bytes, &speed)
+			// 把"这一段完成"上报给 TaskManager 全局速度聚合器（不分流）
+			// 即便当前节流命中（return）也要算全局——所以 Sscanf 之后无条件调用一次
+			if done > 0 {
+				// bytes 是累计已下载字节，估算本段字节：
+				//   prevBytes ≈ bytes - 本段大小。done 也是累计完成数。
+				//   但 done 可能是节流后的累计值，无法直接推出"上一次 to 这一次之间"增量。
+				//   简化：用 speed × 节流间隔 估算瞬时分片字节数（节流固定 500ms）
+				if speed > 0 {
+					segBytes := int64(speed * 0.5) // 500ms 间隔
+					if segBytes > 0 {
+						m.recordGlobalSpeed(segBytes)
+					}
+				}
+			}
 			m.mu.Lock()
 			defer m.mu.Unlock()
 			if total > 0 {
@@ -896,6 +1130,11 @@ type TaskView struct {
 	FolderTarget string            `json:"folder_target,omitempty"`
 	AudioTarget  *AudioTarget      `json:"audio_target,omitempty"`
 	Progress     ProgressView      `json:"progress"`
+
+	// CDN 预热（任务开始时对 m3u8 主机做 HEAD 测速）
+	PrewarmStatus string `json:"prewarm_status,omitempty"`
+	PrewarmMs     int64  `json:"prewarm_ms,omitempty"`
+	PrewarmHost   string `json:"prewarm_host,omitempty"`
 }
 
 // ProgressView 进度视图（映射 downloader.Progress）
@@ -933,6 +1172,9 @@ func (m *TaskManager) Snapshot() Snapshot {
 			Headers:      t.Headers,
 			FolderTarget: t.FolderTarget,
 			AudioTarget:  t.AudioTarget,
+			PrewarmStatus: t.PrewarmStatus,
+			PrewarmMs:     t.PrewarmMs,
+			PrewarmHost:   t.PrewarmHost,
 		}
 		if t.dl != nil {
 			p := t.dl.Progress()
@@ -964,6 +1206,9 @@ func (m *TaskManager) Get(id string) (TaskView, bool) {
 		DownloadDir: t.DownloadDir, TempDir: t.TempDir,
 		Headers: t.Headers, FolderTarget: t.FolderTarget,
 		AudioTarget: t.AudioTarget,
+		PrewarmStatus: t.PrewarmStatus,
+		PrewarmMs:     t.PrewarmMs,
+		PrewarmHost:   t.PrewarmHost,
 	}
 	if t.dl != nil {
 		p := t.dl.Progress()

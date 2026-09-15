@@ -75,6 +75,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/clear", s.withAuth(s.clearHandler))
 	s.mux.HandleFunc("/api/clear-selected", s.withAuth(s.clearSelectedHandler))
 
+	// 全局状态（活跃 worker 数 / 排队数 / 当前总速度 / 历史峰值）
+	// 前端 status dock 轮询这个，轻量、不返回任务列表
+	s.mux.HandleFunc("/api/stats", s.withAuth(s.statsHandler))
+
 	// 文件浏览
 	s.mux.HandleFunc("/api/folders", s.withAuth(s.foldersHandler))
 	s.mux.HandleFunc("/api/video_files", s.withAuth(s.videoFilesHandler))
@@ -91,6 +95,15 @@ func (s *Server) routes() {
 	// 健康检查
 	s.mux.HandleFunc("/health", s.healthHandler)
 	s.mux.HandleFunc("/ready", s.readyHandler)
+}
+
+// statsHandler GET /api/stats — 全局状态快照（status dock 用）
+func (s *Server) statsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.tm.Stats())
 }
 
 // ListenAndServe 启动 HTTP 服务
