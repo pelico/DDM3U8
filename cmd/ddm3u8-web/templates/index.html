@@ -482,9 +482,8 @@
             .batch-info { font-size: 12px; gap: 10px; }
             .progress-bar { height: 5px; }
             .progress-text { font-size: 11px; }
-            .filter-bar { overflow-x: auto; flex-wrap: nowrap; padding-bottom: 10px; margin-left: -18px; margin-right: -18px; padding-left: 18px; padding-right: 18px; }
-            .filter-bar::-webkit-scrollbar { height: 4px; }
-            .filter-chip { flex-shrink: 0; }
+            .filter-bar { padding-bottom: 8px; }
+            .filter-chip { touch-action: manipulation; min-height: 32px; }
         }
     </style>
 </head>
@@ -1431,11 +1430,14 @@
         }
 
         function refreshNow() {
+            // force=true 绕过 isScrolling 检查：用户点 chip 是显式动作，
+            // 不该被"刚 touchend 完还在 150ms 防抖窗口里"误判而跳过刷新。
+            // 手机端因此点筛选按钮看起来"按了没反应"——chip active 切换了，但列表没重渲染。
             if (refreshTimer) {
                 clearTimeout(refreshTimer);
                 refreshTimer = null;
             }
-            refreshTasks();
+            refreshTasks(true);
         }
 
         document.addEventListener('visibilitychange', function() {
