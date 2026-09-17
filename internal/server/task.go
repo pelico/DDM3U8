@@ -944,11 +944,11 @@ func (m *TaskManager) CreateLocalMerge(folderPath, folderName string) string {
 // 任务会进入 schedule 自动运行（与下载任务共用并发槽）。
 func (m *TaskManager) CreateAudioExtract(inputPath, outputPath, ffmpegPath string) string {
 	id := uuid.New().String()[:8]
-	baseName := filepath.Base(inputPath)
-	ext := filepath.Ext(baseName)
-	nameOnly := strings.TrimSuffix(baseName, ext)
-	ts := time.Now().Format("0102_150405")
-	taskName := fmt.Sprintf("%s_%s_%s", nameOnly, ts, id[:3])
+	// 任务名直接取输出文件的基名（去扩展名），保证任务列表跟实际产物对得上，
+	// 避免之前"源名_时间戳_id"与 .m4a 文件名不一致造成误认。
+	baseName := filepath.Base(outputPath)
+	nameOnly := strings.TrimSuffix(baseName, filepath.Ext(baseName))
+	taskName := nameOnly
 
 	task := &Task{
 		ID:        id,
@@ -967,7 +967,7 @@ func (m *TaskManager) CreateAudioExtract(inputPath, outputPath, ffmpegPath strin
 			OutputPath: outputPath,
 		},
 	}
-	task.cmd = fmt.Sprintf("ffmpeg -y -i %s -vn -acodec aac -b:a 192k %s", inputPath, outputPath)
+	task.cmd = fmt.Sprintf("ffmpeg -y -i %s -vn -acodec aac -b:a 96k %s", inputPath, outputPath)
 
 	m.mu.Lock()
 	m.tasks[id] = task
@@ -1018,7 +1018,7 @@ func (m *TaskManager) runAudioExtract(t *Task) {
 	cmd := exec.CommandContext(ctx, ffmpegPath,
 		"-y", "-nostats", "-progress", "pipe:1",
 		"-i", inputPath,
-		"-vn", "-acodec", "aac", "-b:a", "192k",
+		"-vn", "-acodec", "aac", "-b:a", "96k",
 		outputPath,
 	)
 	stdout, _ := cmd.StdoutPipe()
