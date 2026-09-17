@@ -246,12 +246,6 @@
         #advancedOptions input[type="text"], #advancedOptions input[type="number"], #advancedOptions select {
             height: 40px; padding: 0 12px; box-sizing: border-box;
         }
-        .hint-box {
-            grid-column: 1 / -1;
-            background: var(--surface-2); border: 1px solid var(--border);
-            border-radius: var(--radius-sm); padding: 10px 12px;
-            font-size: 12.5px; color: var(--muted); line-height: 1.8;
-        }
         @media (max-width: 600px) {
             .adv-panel { grid-template-columns: 1fr; gap: 12px; }
             .adv-tri { grid-template-columns: 1fr; }
@@ -589,13 +583,6 @@
                     <div class="adv-item full">
                         <label class="adv-label" for="headersInput">自定义请求头（选填，每行 Key:Value）</label>
                         <textarea class="input-full" name="custom_headers" id="headersInput" rows="2" placeholder="Sec-Fetch-Site: cross-site&#10;Sec-Fetch-Mode: cors"></textarea>
-                    </div>
-                    <div class="hint-box">
-                        • 并发默认 3 避免触发风控，非限制资源可调到 10<br>
-                        • UA 与 TLS 指纹需匹配：移动/桌面 Chrome/Edge 配 chrome，iOS/macOS Safari 配 safari，Firefox 配 firefox<br>
-                        • sec-ch-ua 系列根据 UA 自动推导，无需手动填<br>
-                        • Cookie 可直接整段粘贴，自动清洗只留 name=value<br>
-                        • 左键点击"清除"按钮才清空已保存的字段
                     </div>
                 </div>
 
