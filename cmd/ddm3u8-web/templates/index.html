@@ -1247,7 +1247,10 @@
         }
 
         async function refreshTasks(force = false) {
-            if (isScrolling || (!force && refreshInFlight) || document.hidden) return;
+            // force=true（用户点筛选 chip）要绕过 isScrolling：
+            // 手机上点 chip 前会先触发 touchstart 把 isScrolling 置 true，
+            // 若不过滤掉，点击的 click 在 150ms 防抖窗口内会被吞掉，导致列表不重渲染。
+            if ((isScrolling && !force) || (!force && refreshInFlight) || document.hidden) return;
             if (refreshTimer) {
                 clearTimeout(refreshTimer);
                 refreshTimer = null;
