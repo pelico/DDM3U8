@@ -278,6 +278,17 @@
         .btn-secondary { background: var(--surface); color: var(--muted); border-color: var(--border-strong); }
         .btn-secondary:hover:not(:disabled) { background: var(--surface-2); color: var(--text); border-color: var(--border); }
         .btn-sm { padding: 7px 11px; font-size: 12.5px; border-radius: 8px; gap: 5px; }
+        /* 浅色主题下把小操作按钮（任务列表/批量条）提亮一档，避免整排深色显得过重。
+           :root:not([data-theme=dark]) 限定 —— 只影响默认浅色，不影响 dark 主题，
+           也不碰表单里的主 CTA 按钮（那些用的是 .btn 而非 .btn-sm）。 */
+        :root:not([data-theme="dark"]) .btn-sm.btn-main { background: #6366f1; }
+        :root:not([data-theme="dark"]) .btn-sm.btn-main:hover:not(:disabled) { background: #5854e6; }
+        :root:not([data-theme="dark"]) .btn-sm.btn-success { background: #10b981; }
+        :root:not([data-theme="dark"]) .btn-sm.btn-success:hover:not(:disabled) { background: #059669; }
+        :root:not([data-theme="dark"]) .btn-sm.btn-warning { background: #f59e0b; }
+        :root:not([data-theme="dark"]) .btn-sm.btn-warning:hover:not(:disabled) { background: #d97706; }
+        :root:not([data-theme="dark"]) .btn-sm.btn-danger { background: #ef4444; }
+        :root:not([data-theme="dark"]) .btn-sm.btn-danger:hover:not(:disabled) { background: #dc2626; }
         .btn-full { width: 100%; }
         .btn-group { display: flex; gap: 7px; flex-wrap: wrap; }
 
