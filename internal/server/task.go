@@ -409,16 +409,18 @@ func buildCmdString(cfg downloader.Config) string {
 }
 
 // schedule 调度任务执行（保证 maxParallel 并发上限）
+// 下载/合并/音频转换任务共用并发槽：音频任务（AudioTarget!=nil）也由这里统一调度，
+// 避免"一次性创建大量音频任务时全部同时起 ffmpeg 进程"不受 maxParallel 约束。
 func (m *TaskManager) schedule() {
 	m.mu.Lock()
 	active := 0
 	for _, id := range m.order {
 		t := m.tasks[id]
-		if t.Status == StatusDownload || t.Status == StatusMerge {
+		if t.Status == StatusDownload || t.Status == StatusMerge || t.Status == StatusConverting {
 			active++
 		}
 	}
-	// 找到排队中的任务，在同一次锁内立即占位为"下载中"，
+	// 找到排队中的任务，在同一次锁内立即占位为"下载中"/"转换中"，
 	// 避免 Unlock 后到 runTask 重新加锁设状态之间，被并发 schedule()
 	// 重复选中同一任务（check-then-act 竞态：一次提交多个 URL 会并发触发多个 schedule，
 	// 都读到同一 Queued 任务还未变 Downloading，导致对同一任务并发 runTask，
@@ -428,7 +430,11 @@ func (m *TaskManager) schedule() {
 		for _, id := range m.order {
 			t := m.tasks[id]
 			if t.Status == StatusQueued {
-				t.Status = StatusDownload // 占位，runTask 内会重新设置完整运行时字段
+				if t.AudioTarget != nil {
+					t.Status = StatusConverting // 音频占位
+				} else {
+					t.Status = StatusDownload // 占位，runTask 内会重新设置完整运行时字段
+				}
 				toStart = t
 				break
 			}
@@ -437,7 +443,11 @@ func (m *TaskManager) schedule() {
 	m.mu.Unlock()
 
 	if toStart != nil {
-		m.runTask(toStart)
+		if toStart.AudioTarget != nil {
+			m.runAudioExtract(toStart)
+		} else {
+			m.runTask(toStart)
+		}
 		// 启动后递归再调度（可能还能再起一个）
 		go m.schedule()
 	}
@@ -809,16 +819,11 @@ func (m *TaskManager) Resume(id string) bool {
 	t.Status = StatusQueued
 	t.Log = "等待执行（恢复）..."
 	t.OutputFile = ""
-	// audio_target 任务（音频转换）不走下载调度器：恢复=重新跑一次 ffmpeg 转换
-	restartAudio := t.AudioTarget != nil
 	m.mu.Unlock()
 
 	m.saveTasks() // 持久化
-	if restartAudio {
-		go m.runAudioExtract(t)
-	} else {
-		go m.schedule()
-	}
+	// audio_target 任务（音频转换）同样入队走统一调度，受 maxParallel 约束
+	go m.schedule()
 	return true
 }
 
@@ -975,7 +980,8 @@ func (m *TaskManager) CreateAudioExtract(inputPath, outputPath, ffmpegPath strin
 	m.mu.Unlock()
 
 	m.saveTasks() // 持久化
-	go m.runAudioExtract(task)
+	// 入队走统一调度器，避免大量音频任务同时起 ffmpeg 不受 maxParallel 限制
+	go m.schedule()
 	return id
 }
 
