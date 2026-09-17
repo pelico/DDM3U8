@@ -1364,10 +1364,12 @@
                         case '错误':
                         case '失败':
                         case '任务错误':
-                            if (t.cmd) {
-                                btns = `<div class="btn-group"><button class="btn btn-sm btn-main" data-task-id="${safeId}" onclick="manageTask(this.dataset.taskId,'resume')">恢复</button><button class="btn btn-sm btn-success" data-task-id="${safeId}" onclick="manageTask(this.dataset.taskId,'merge')">强合</button></div>`;
-                            } else if (t.audio_target) {
+                            // 音频转换任务也设置了 cmd，须先判 audio_target，
+                            // 否则会误走下载任务的"强合"分支
+                            if (t.audio_target) {
                                 btns = `<button class="btn btn-sm btn-main" data-task-id="${safeId}" onclick="manageTask(this.dataset.taskId,'resume')">重新转换</button>`;
+                            } else if (t.cmd) {
+                                btns = `<div class="btn-group"><button class="btn btn-sm btn-main" data-task-id="${safeId}" onclick="manageTask(this.dataset.taskId,'resume')">恢复</button><button class="btn btn-sm btn-success" data-task-id="${safeId}" onclick="manageTask(this.dataset.taskId,'merge')">强合</button></div>`;
                             } else {
                                 btns = `<button class="btn btn-sm btn-success" data-task-id="${safeId}" onclick="manageTask(this.dataset.taskId,'merge')">重试合并</button>`;
                             }
