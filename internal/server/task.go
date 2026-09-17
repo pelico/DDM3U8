@@ -26,13 +26,14 @@ import (
 
 // 任务状态常量（与原 Flask 前端展示对齐）
 const (
-	StatusQueued   = "排队中"
-	StatusDownload = "下载中"
-	StatusMerge    = "合并中"
-	StatusDone     = "已完成"
-	StatusFailed   = "失败"
-	StatusCanceled = "已取消"
-	StatusPaused   = "已暂停"
+	StatusQueued     = "排队中"
+	StatusDownload   = "下载中"
+	StatusMerge      = "合并中"
+	StatusConverting = "转换中" // 音频提取（ffmpeg 转 .m4a）
+	StatusDone       = "已完成"
+	StatusFailed     = "失败"
+	StatusCanceled   = "已取消"
+	StatusPaused     = "已暂停"
 )
 
 // Task 单个下载任务
@@ -742,8 +743,8 @@ func (m *TaskManager) Pause(id string) bool {
 		m.mu.Unlock()
 		return false
 	}
-	// 仅活跃任务可暂停
-	if t.Status != StatusDownload && t.Status != StatusQueued && t.Status != StatusMerge {
+	// 仅活跃任务可暂停（含音频提取 StatusConverting：杀掉 ffmpeg）
+	if t.Status != StatusDownload && t.Status != StatusQueued && t.Status != StatusMerge && t.Status != StatusConverting {
 		m.mu.Unlock()
 		return false
 	}
@@ -751,7 +752,12 @@ func (m *TaskManager) Pause(id string) bool {
 		t.cancel()
 	}
 	t.Status = StatusPaused
-	t.Log = "已暂停，保留缓存可恢复"
+	if t.AudioTarget != nil {
+		// 音频转换无断点：ffmpeg 被终止，恢复时从头重新转换
+		t.Log = "已暂停（音频转换恢复将重新开始）"
+	} else {
+		t.Log = "已暂停，保留缓存可恢复"
+	}
 	m.mu.Unlock()
 	// 注意：必须在锁外调用 saveTasks，否则 saveTasks 内部 RLock 会与
 	// 当前 goroutine 持有的 Lock 死锁（Go RWMutex 不允许同 goroutine 既 Lock 又 RLock）
@@ -759,7 +765,7 @@ func (m *TaskManager) Pause(id string) bool {
 	return true
 }
 
-// Cancel 取消任务（仅下载中/排队中/合并中），并清理 temp_dir
+// Cancel 取消任务（仅下载中/排队中/合并中/转换中），并清理 temp_dir
 func (m *TaskManager) Cancel(id string) bool {
 	m.mu.Lock()
 	t, ok := m.tasks[id]
@@ -767,7 +773,8 @@ func (m *TaskManager) Cancel(id string) bool {
 		m.mu.Unlock()
 		return false
 	}
-	if t.Status != StatusDownload && t.Status != StatusQueued && t.Status != StatusMerge {
+	// 转换中（音频提取）也允许取消：杀掉 ffmpeg 进程
+	if t.Status != StatusDownload && t.Status != StatusQueued && t.Status != StatusMerge && t.Status != StatusConverting {
 		m.mu.Unlock()
 		return false
 	}
@@ -802,10 +809,16 @@ func (m *TaskManager) Resume(id string) bool {
 	t.Status = StatusQueued
 	t.Log = "等待执行（恢复）..."
 	t.OutputFile = ""
+	// audio_target 任务（音频转换）不走下载调度器：恢复=重新跑一次 ffmpeg 转换
+	restartAudio := t.AudioTarget != nil
 	m.mu.Unlock()
 
 	m.saveTasks() // 持久化
-	go m.schedule()
+	if restartAudio {
+		go m.runAudioExtract(t)
+	} else {
+		go m.schedule()
+	}
 	return true
 }
 
@@ -989,7 +1002,7 @@ func (m *TaskManager) runAudioExtract(t *Task) {
 
 	// 转"转换中" + 注册 cancel
 	m.mu.Lock()
-	t.Status = "转换中"
+	t.Status = StatusConverting
 	if t.cancel != nil {
 		t.cancel()
 	}
@@ -1107,8 +1120,12 @@ func (m *TaskManager) runAudioExtract(t *Task) {
 	err := cmd.Wait()
 	m.mu.Lock()
 	if err != nil {
-		t.Status = StatusFailed
-		t.Log = fmt.Sprintf("❌ FFmpeg转换失败(退出码:%d)", cmd.ProcessState.ExitCode())
+		// ffmpeg 被 pause/cancel 主动终止（ctx 取消）：Pause/Cancel 已把状态改成
+		// "已暂停"/"已取消"，这里不能覆盖成"失败"。
+		if ctx.Err() == nil {
+			t.Status = StatusFailed
+			t.Log = fmt.Sprintf("❌ FFmpeg转换失败(退出码:%d)", cmd.ProcessState.ExitCode())
+		}
 	} else {
 		t.Status = "完成(音频)"
 		t.Log = "✅ 音频提取成功: " + filepath.Base(outputPath)

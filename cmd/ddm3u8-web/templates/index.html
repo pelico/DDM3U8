@@ -1343,7 +1343,7 @@
                             statusClass = 'status-merge';
                             break;
                         case '转换中':
-                            btns = `<span style="font-size:11px;color:#7c3aed;">转换中...</span>`;
+                            btns = `<div class="btn-group"><button class="btn btn-sm btn-warning" data-task-id="${safeId}" onclick="manageTask(this.dataset.taskId,'pause')">暂停</button><button class="btn btn-sm btn-danger" data-task-id="${safeId}" onclick="manageTask(this.dataset.taskId,'cancel')">取消</button></div>`;
                             statusClass = 'status-merge';
                             break;
                         case '已完成':
