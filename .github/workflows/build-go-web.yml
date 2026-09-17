@@ -15,6 +15,14 @@ on:
     tags: ["go-web-v*.*.*"]
   workflow_dispatch:
 
+# 串行化：同时推 go-core + 多个 go-web-v* tag 会触发多个并行 workflow run，
+# 它们会互相覆盖共享的 :go-web / :go-web-* 镜像 tag（后跑完的赢，可能把旧代码
+# 覆到最新 tag 上）。加 concurrency 让同一时间只有一个 run 在跑，且最新的
+# push 会取消仍卡在排队/进行中的旧 run → 共享镜像 tag 最终稳定指向最新代码。
+concurrency:
+  group: build-go-web
+  cancel-in-progress: true
+
 permissions:
   contents: write
   packages: write
@@ -73,10 +81,13 @@ jobs:
   # ---------- 把三架构最新镜像聚合成固定的多架构 tag（ghcr.io/..:go-web） ----------
   # 用户日常直接 docker pull ghcr.io/..:go-web，三架构自动识别，始终指向最新。
   # 之前 :go-web 无后缀 tag 从不更新，pull 到的始终是旧版 Web UI。
-  # 每次 go-core 推代码 / 打 tag 构建完成后，都合并一次 :go-web。
+  # 只在 go-core 分支 push 时合并：tag 触发的 run 只构建后缀镜像/tar/二进制/release，
+  # 不碰 :go-web。否则同时推多个 tag 时并行 merge 互相覆盖 :go-web（谁晚跑完谁赢，
+  # 可能把旧代码覆到最新 tag）。分支 push 恒指向最新 go-core 代码，确定性最好。
   merge-go-web:
     runs-on: ubuntu-latest
     needs: single-arch
+    if: github.ref == 'refs/heads/go-core'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
