@@ -423,15 +423,7 @@
         }
         .filter-empty-hint .ico { font-size: 24px; margin-bottom: 6px; }
 
-        .worker-status {
-            display: inline-flex; align-items: center; gap: 7px;
-            font-size: 12px; color: var(--muted);
-            background: var(--surface); border: 1px solid var(--border);
-            padding: 6px 12px; border-radius: 999px;
-        }
-        .worker-status .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--success); }
-
-        /* ---------- 选择文件夹 / 视频列表 ---------- */
+        /* 选择文件夹 / 视频列表 */
         #folderSelectBtn { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
         .modal { display: none; position: fixed; z-index: 999; inset: 0; background: rgba(17,24,39,.4); backdrop-filter: blur(3px); }
@@ -502,7 +494,6 @@
                 </div>
             </div>
             <div style="display:flex; align-items:center; gap:10px;">
-                <div id="workerStatus" class="worker-status"><span class="dot"></span>运行中: 0/3</div>
                 <button id="themeToggle" class="theme-toggle" type="button" title="切换主题">
                     <svg class="theme-icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                         <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
@@ -1279,8 +1270,7 @@
             try {
                 const response = await apiFetch('/api/tasks');
                 const data = await response.json();
-                document.getElementById('workerStatus').innerText = `运行中: ${data.active_workers}/${data.max_workers}`;
-                
+
                 const taskIds = Array.isArray(data.task_order) ? data.task_order : Object.keys(data.tasks);
                 const hasActiveTask = taskIds.some(id => ['排队中', '下载中', '合并中', '等待FFmpeg', '转换中'].includes(data.tasks[id].status));
                 nextRefreshDelay = hasActiveTask ? ACTIVE_REFRESH_INTERVAL : IDLE_REFRESH_INTERVAL;
@@ -1416,7 +1406,9 @@
                     updateSelectedCount();
                 });
             } catch (err) {
-                document.getElementById('workerStatus').innerText = '连接异常，正在重试';
+                // 任务列表拉取失败：底部 status dock 仍会通过 /api/stats 重试并提示速度归零，
+                // 这里不弹文字，保持静默避免重复打扰。
+                console.error('refreshTasks failed:', err);
             } finally {
                 refreshInFlight = false;
                 scheduleRefresh(nextRefreshDelay);
