@@ -2,16 +2,18 @@
 package server
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -964,7 +966,16 @@ func (m *TaskManager) CreateAudioExtract(inputPath, outputPath, ffmpegPath strin
 	return id
 }
 
-// runAudioExtract 跑 ffmpeg 提取音频；完成后清理 process 状态。
+// runAudioExtract 跑 ffmpeg 提取音频；同时解析 -progress 输出，
+// 把「百分比 / 已用时间 / 总时长 / 速度 / 输出大小」写入 t.Log，前端
+// 进度条会通过 t.Log 中的 "X%" 自动渲染。
+//
+// 设计要点：
+//   - ffmpeg 加 -progress pipe:1 -nostats：stdout 输出干净的 key=value 行
+//     （out_time, speed, total_size, progress=continue|end），stderr 仅用于
+//     解析初始 "Duration: HH:MM:SS.xx" 拿总时长
+//   - 进度更新限流到 500ms 一次：前端轮询 2s/次，没必要每 50ms 都写锁；
+//     也避免 t.Log 抖动干扰视觉
 func (m *TaskManager) runAudioExtract(t *Task) {
 	if t.AudioTarget == nil {
 		return
@@ -988,10 +999,15 @@ func (m *TaskManager) runAudioExtract(t *Task) {
 	m.mu.Unlock()
 	defer cancel()
 
-	t.Log = "开始提取音频..."
+	t.Log = "开始提取音频（解析时长）..."
 	m.saveTasks()
 
-	cmd := exec.CommandContext(ctx, ffmpegPath, "-y", "-i", inputPath, "-vn", "-acodec", "aac", "-b:a", "192k", outputPath)
+	cmd := exec.CommandContext(ctx, ffmpegPath,
+		"-y", "-nostats", "-progress", "pipe:1",
+		"-i", inputPath,
+		"-vn", "-acodec", "aac", "-b:a", "192k",
+		outputPath,
+	)
 	stdout, _ := cmd.StdoutPipe()
 	stderr, _ := cmd.StderrPipe()
 	if err := cmd.Start(); err != nil {
@@ -1002,27 +1018,88 @@ func (m *TaskManager) runAudioExtract(t *Task) {
 		m.saveTasks()
 		return
 	}
-	// 简单 tail：把 ffmpeg 输出的"size=/time="行写到 log
+
+	// 总时长（秒，浮点）；stderr 解析后写入，多 goroutine 只写一次
+	var totalDurSec atomic.Pointer[float64]
+	durRe := regexp.MustCompile(`Duration:\s+(\d+):(\d+):(\d+(?:\.\d+)?)`)
+
+	// stderr：解析 Duration（ffmpeg 启动早期会往 stderr 打这一行）
 	go func() {
-		reader := io.MultiReader(stdout, stderr)
-		buf := make([]byte, 256)
-		last := ""
-		for {
-			n, err := reader.Read(buf)
-			if n > 0 {
-				chunk := string(buf[:n])
-				if strings.Contains(chunk, "time=") || strings.Contains(chunk, "size=") {
-					last = chunk[strings.LastIndexAny(chunk, "\r\n")+1:]
-					if len(last) > 100 {
-						last = last[len(last)-100:]
-					}
-					m.mu.Lock()
-					t.Log = strings.TrimSpace(last)
-					m.mu.Unlock()
-				}
+		scanner := bufio.NewScanner(stderr)
+		// 进度信息不带 "Duration:" 时长=0 字节，行长通常 < 1KB，64KB 缓冲足够
+		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if dm := durRe.FindStringSubmatch(line); dm != nil && totalDurSec.Load() == nil {
+				h, _ := strconv.ParseFloat(dm[1], 64)
+				min, _ := strconv.ParseFloat(dm[2], 64)
+				sec, _ := strconv.ParseFloat(dm[3], 64)
+				d := h*3600 + min*60 + sec
+				totalDurSec.Store(&d)
+				// 拿到总时长后立刻刷一次 log，让前端立刻有百分比而不是 0%
+				m.mu.Lock()
+				t.Log = fmt.Sprintf("[音频提取] 0.0%% | 00:00:00 / %s | 速度 N/A | 输出 0 B",
+					formatHmsFloat(*totalDurSec.Load()))
+				m.mu.Unlock()
 			}
-			if err != nil {
-				return
+		}
+	}()
+
+	// stdout：解析 key=value 进度
+	go func() {
+		scanner := bufio.NewScanner(stdout)
+		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		var outSec float64
+		var totalSize int64
+		var speedX float64
+		var lastLog time.Time
+		for scanner.Scan() {
+			line := strings.TrimSpace(scanner.Text())
+			key, val, ok := strings.Cut(line, "=")
+			if !ok {
+				continue
+			}
+			switch key {
+			case "out_time":
+				// "HH:MM:SS.uuuuuu"
+				if v, err := parseHms(val); err == nil {
+					outSec = v
+				}
+			case "total_size":
+				if v, err := strconv.ParseInt(val, 10, 64); err == nil {
+					totalSize = v
+				}
+			case "speed":
+				// "1.5x" 或 "N/A"
+				if strings.HasSuffix(val, "x") {
+					if f, err := strconv.ParseFloat(strings.TrimSuffix(val, "x"), 64); err == nil {
+						speedX = f
+					}
+				}
+			case "progress":
+				// 限流：500ms 内只更新一次
+				if val != "continue" || time.Since(lastLog) < 500*time.Millisecond {
+					continue
+				}
+				lastLog = time.Now()
+				var pct float64
+				var totalPtr = totalDurSec.Load()
+				if totalPtr != nil && *totalPtr > 0 {
+					pct = outSec / *totalPtr * 100
+					if pct > 100 {
+						pct = 100
+					}
+				}
+				logLine := fmt.Sprintf("[音频提取] %.1f%% | %s / %s | 速度 %s | 输出 %s",
+					pct,
+					formatHmsFloat(outSec),
+					formatHmsPtr(totalDurSec.Load()),
+					formatSpeedX(speedX),
+					downloader.FormatBytes(totalSize),
+				)
+				m.mu.Lock()
+				t.Log = logLine
+				m.mu.Unlock()
 			}
 		}
 	}()
@@ -1039,6 +1116,55 @@ func (m *TaskManager) runAudioExtract(t *Task) {
 	t.cancel = nil
 	m.mu.Unlock()
 	m.saveTasks()
+}
+
+// parseHms 解析 ffmpeg "HH:MM:SS.uuuuuu" / "Duration: HH:MM:SS.xx" 格式，返回秒
+func parseHms(s string) (float64, error) {
+	parts := strings.SplitN(s, ":", 3)
+	if len(parts) != 3 {
+		return 0, fmt.Errorf("invalid time: %q", s)
+	}
+	h, err := strconv.ParseFloat(parts[0], 64)
+	if err != nil {
+		return 0, err
+	}
+	min, err := strconv.ParseFloat(parts[1], 64)
+	if err != nil {
+		return 0, err
+	}
+	sec, err := strconv.ParseFloat(parts[2], 64)
+	if err != nil {
+		return 0, err
+	}
+	return h*3600 + min*60 + sec, nil
+}
+
+// formatHmsFloat 把秒数格式化为 HH:MM:SS（用于已用时间）
+func formatHmsFloat(sec float64) string {
+	if sec < 0 {
+		sec = 0
+	}
+	total := int64(sec)
+	h := total / 3600
+	m := (total % 3600) / 60
+	s := total % 60
+	return fmt.Sprintf("%02d:%02d:%02d", h, m, s)
+}
+
+// formatHmsPtr 把 *float64 秒数格式化为 HH:MM:SS，nil 时返回 "--:--:--"
+func formatHmsPtr(sec *float64) string {
+	if sec == nil {
+		return "--:--:--"
+	}
+	return formatHmsFloat(*sec)
+}
+
+// formatSpeedX 格式化 ffmpeg speed 值（1.5 → "1.5x"，0 → "N/A"）
+func formatSpeedX(s float64) string {
+	if s <= 0 {
+		return "N/A"
+	}
+	return fmt.Sprintf("%.1fx", s)
 }
 
 // Delete 删除任务记录（不能删除活跃中的）；同时清理 temp_dir
