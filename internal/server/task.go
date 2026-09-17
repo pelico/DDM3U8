@@ -412,49 +412,54 @@ func buildCmdString(cfg downloader.Config) string {
 // 下载/合并/音频转换任务共用并发槽：音频任务（AudioTarget!=nil）也由这里统一调度，
 // 避免"一次性创建大量音频任务时全部同时起 ffmpeg 进程"不受 maxParallel 约束。
 func (m *TaskManager) schedule() {
+	// 单轮循环把可启动的排队任务尽量填满到 maxParallel，最后才释放锁。
+	// 每轮重新统计 active（占位后该任务即算作 Running），直到无空槽或没排队任务为止。
+	// 任务启动用 goroutine，不阻塞本函数，避免"一次只起一个、再递归"时被下载时长拖住、
+	// 导致有空槽也迟迟补不上排队任务。
 	m.mu.Lock()
-	active := 0
-	for _, id := range m.order {
-		t := m.tasks[id]
-		if t.Status == StatusDownload || t.Status == StatusMerge || t.Status == StatusConverting {
-			active++
+	for {
+		active := 0
+		for _, id := range m.order {
+			t := m.tasks[id]
+			if t.Status == StatusDownload || t.Status == StatusMerge || t.Status == StatusConverting {
+				active++
+			}
 		}
-	}
-	// 找到排队中的任务，在同一次锁内立即占位为"下载中"/"转换中"，
-	// 避免 Unlock 后到 runTask 重新加锁设状态之间，被并发 schedule()
-	// 重复选中同一任务（check-then-act 竞态：一次提交多个 URL 会并发触发多个 schedule，
-	// 都读到同一 Queued 任务还未变 Downloading，导致对同一任务并发 runTask，
-	// 两个 Downloader 写同一 TempDir 且后启动者覆盖 t.dl/t.cancel 使前者无法取消）
-	var toStart *Task
-	if active < m.maxParallel {
+		if active >= m.maxParallel {
+			break
+		}
+		var pick *Task
 		for _, id := range m.order {
 			t := m.tasks[id]
 			if t.Status == StatusQueued {
-				if t.AudioTarget != nil {
-					t.Status = StatusConverting // 音频占位
-				} else {
-					t.Status = StatusDownload // 占位，runTask 内会重新设置完整运行时字段
-				}
-				toStart = t
+				pick = t
 				break
 			}
 		}
+		if pick == nil {
+			break
+		}
+		// 占位（check-then-act 竞态防护：先标记非 Queued，避免并发 schedule 重复选中同任务）
+		if pick.AudioTarget != nil {
+			pick.Status = StatusConverting // 音频占位
+		} else {
+			pick.Status = StatusDownload // 占位，runTask 内会重新设置完整运行时字段
+		}
+		m.mu.Unlock()
+		if pick.AudioTarget != nil {
+			go m.runAudioExtract(pick)
+		} else {
+			go m.runTask(pick)
+		}
+		m.mu.Lock()
 	}
 	m.mu.Unlock()
-
-	if toStart != nil {
-		if toStart.AudioTarget != nil {
-			m.runAudioExtract(toStart)
-		} else {
-			m.runTask(toStart)
-		}
-		// 启动后递归再调度（可能还能再起一个）
-		go m.schedule()
-	}
 }
 
 // runTask 在 goroutine 中执行单个任务
 func (m *TaskManager) runTask(t *Task) {
+	// 任务结束（成功/失败/暂停）说明释放了一个并发槽，触发 schedule 补位排队任务
+	defer func() { go m.schedule() }()
 	ctx, cancel := context.WithCancel(context.Background())
 	// 进度日志节流时间戳（原子读写，避免每个分片都抢 m.mu）
 	// 用 atomic.Int64 而不是裸 int64：32-bit ARM 上 int64 栈变量不能保证 8 字节对齐，
@@ -996,6 +1001,8 @@ func (m *TaskManager) CreateAudioExtract(inputPath, outputPath, ffmpegPath strin
 //   - 进度更新限流到 500ms 一次：前端轮询 2s/次，没必要每 50ms 都写锁；
 //     也避免 t.Log 抖动干扰视觉
 func (m *TaskManager) runAudioExtract(t *Task) {
+	// 转换结束（成功/失败）说明释放了并发槽，触发 schedule 补位排队任务
+	defer func() { go m.schedule() }()
 	if t.AudioTarget == nil {
 		return
 	}
