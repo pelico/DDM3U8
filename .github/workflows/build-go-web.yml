@@ -15,13 +15,15 @@ on:
     tags: ["go-web-v*.*.*"]
   workflow_dispatch:
 
-# 串行化：同时推 go-core + 多个 go-web-v* tag 会触发多个并行 workflow run，
-# 它们会互相覆盖共享的 :go-web / :go-web-* 镜像 tag（后跑完的赢，可能把旧代码
-# 覆到最新 tag 上）。加 concurrency 让同一时间只有一个 run 在跑，且最新的
-# push 会取消仍卡在排队/进行中的旧 run → 共享镜像 tag 最终稳定指向最新代码。
+# 串行化：同时推 go-core + 多个 go-web-v* tag 会触发多个并行 workflow run。
+# concurrency.group 让同一时间只跑一个 run，避免它们并发改写共享的 :go-web-* 后缀
+# 镜像 tag（:go-web 的正确性已由 merge-go-web 的 branch 限制保证，见下）。
+# cancel-in-progress 必须为 false：一旦为 true，后触发的 go-core run 会把先触发的
+# tag run 整个取消，导致 release 的 tar 包 / CLI 二进制根本没构建出来
+# （GitHub 上就显示黄色感叹号 + "Canceling since a higher priority waiting request..."）。
 concurrency:
   group: build-go-web
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: write
