@@ -188,7 +188,7 @@ func (m *TaskManager) Stats() StatsSnapshot {
 	for _, id := range m.order {
 		t := m.tasks[id]
 		switch t.Status {
-		case StatusDownload, StatusMerge:
+		case StatusDownload, StatusMerge, StatusConverting:
 			active++
 		case StatusQueued:
 			queued++
@@ -1475,6 +1475,11 @@ func (m *TaskManager) ListFolders() []string {
 // ============ 任务历史持久化（对齐 armv7l：JSON 文件，原子写） ============
 
 // taskRecord 是任务的可序列化形式（剥离运行时字段：cfg/cancel/dl/startedAt）
+type dbFile struct {
+	MaxParallel int          `json:"max_parallel"`
+	Tasks       []taskRecord `json:"tasks"`
+}
+
 type taskRecord struct {
 	ID         string    `json:"id"`
 	Name       string    `json:"name"`
@@ -1534,11 +1539,16 @@ func (m *TaskManager) saveTasks() {
 			AudioTarget:    t.AudioTarget,
 		})
 	}
+	// max_parallel 一并持久化到任务 JSON，重启后沿用用户设置（而非复位到环境变量默认）
+	maxParallel := m.maxParallel
 	dbPath := m.dbPath
 	m.mu.RUnlock()
 
 	tmp := dbPath + ".tmp"
-	data, err := json.MarshalIndent(records, "", "  ")
+	data, err := json.MarshalIndent(dbFile{
+		MaxParallel: maxParallel,
+		Tasks:       records,
+	}, "", "  ")
 	if err != nil {
 		return
 	}
@@ -1546,6 +1556,26 @@ func (m *TaskManager) saveTasks() {
 		return
 	}
 	_ = os.Rename(tmp, dbPath)
+}
+
+// SetMaxParallel 动态修改并发上限（下载/合并/音频转换共用）。
+// 持久化到任务 JSON；改大后立即触发一次调度，把排队中的任务补进来。
+func (m *TaskManager) SetMaxParallel(n int) {
+	if n < 1 {
+		n = 1
+	}
+	m.mu.Lock()
+	m.maxParallel = n
+	m.mu.Unlock()
+	m.saveTasks() // 持久化
+	go m.schedule()
+}
+
+// MaxParallel 返回当前并发上限（goroutine-safe）
+func (m *TaskManager) MaxParallel() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.maxParallel
 }
 
 // LoadTasks 从 dbPath 加载任务历史（启动时调用）。
@@ -1560,17 +1590,30 @@ func (m *TaskManager) LoadTasks() {
 		// 文件不存在（首次启动）属正常，不报错
 		return
 	}
-	var records []taskRecord
-	if err := json.Unmarshal(data, &records); err != nil {
+	var dbData dbFile
+	if err := json.Unmarshal(data, &dbData); err != nil {
 		// 损坏的 db：备份后丢弃，避免反复读坏文件
 		bak := m.dbPath + ".corrupt"
 		_ = os.Rename(m.dbPath, bak)
 		return
 	}
+	// 兼容旧版：老文件是 `[]taskRecord` 纯数组，json.Unmarshal 进 dbFile 会失败
+	//（"cannot unmarshal array into Go value of type server.dbFile"）。
+	// 若外层失败，则尝试按纯任务数组解析。
+	if dbData.Tasks == nil && dbData.MaxParallel == 0 {
+		var oldRecords []taskRecord
+		if err := json.Unmarshal(data, &oldRecords); err == nil {
+			dbData.Tasks = oldRecords
+		}
+	}
+	// max_parallel：优先用持久化的值；用户从未设置过（旧版或首次）则用当前环境变量默认
+	if dbData.MaxParallel >= 1 {
+		m.maxParallel = dbData.MaxParallel
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	// 按 createdAt 升序恢复，再反转入 order（最新在前）
-	for _, r := range records {
+	for _, r := range dbData.Tasks {
 		t := &Task{
 			ID: r.ID, Name: r.Name, URL: r.URL, Status: r.Status,
 			Log: r.Log, cmd: r.Cmd, OutputFile: r.OutputFile,

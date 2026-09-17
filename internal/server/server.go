@@ -78,6 +78,7 @@ func (s *Server) routes() {
 	// 全局状态（活跃 worker 数 / 排队数 / 当前总速度 / 历史峰值）
 	// 前端 status dock 轮询这个，轻量、不返回任务列表
 	s.mux.HandleFunc("/api/stats", s.withAuth(s.statsHandler))
+	s.mux.HandleFunc("/api/max_parallel", s.withAuth(s.maxParallelHandler))
 
 	// 文件浏览
 	s.mux.HandleFunc("/api/folders", s.withAuth(s.foldersHandler))
@@ -104,6 +105,37 @@ func (s *Server) statsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, s.tm.Stats())
+}
+
+// maxParallelHandler GET/PUT /api/max_parallel — 读取或修改并发上限
+// 读：返回当前值；写：FormValue("value") 或 JSON body {"value":n} 设置并持久化。
+func (s *Server) maxParallelHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		writeJSON(w, http.StatusOK, map[string]int{"max_parallel": s.tm.MaxParallel()})
+		return
+	}
+	if r.Method != http.MethodPost && r.Method != http.MethodPut {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	valueStr := ""
+	if r.FormValue("value") != "" {
+		valueStr = r.FormValue("value")
+	} else if strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+		var body struct {
+			Value int `json:"value"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err == nil {
+			valueStr = strconv.Itoa(body.Value)
+		}
+	}
+	v, err := strconv.Atoi(strings.TrimSpace(valueStr))
+	if err != nil || v < 1 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "value 必须是 >=1 的整数"})
+		return
+	}
+	s.tm.SetMaxParallel(v)
+	writeJSON(w, http.StatusOK, map[string]int{"max_parallel": s.tm.MaxParallel()})
 }
 
 // ListenAndServe 启动 HTTP 服务

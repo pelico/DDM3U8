@@ -158,6 +158,14 @@
         }
         .status-dock-item .num.peak { color: var(--warning); }
         .status-dock-item .num.idle { color: var(--muted); }
+        .status-dock-item.dock-settings {
+            background: none; border: none; border-right: 1px solid var(--border);
+            cursor: pointer; color: var(--muted);
+            transition: color .15s ease, transform .1s ease;
+        }
+        .status-dock-item.dock-settings:hover { color: var(--primary); }
+        .status-dock-item.dock-settings:active { transform: scale(.92); }
+        .status-dock-item.dock-settings .ico { color: inherit; }
         /* 移动端：缩小间距，避免挡住下方按钮 */
         @media (max-width: 600px) {
             .status-dock { bottom: 10px; }
@@ -742,28 +750,42 @@
         </div>
     </div>
 
-    <!-- 底部悬浮状态条：实时显示运行/排队/速度/峰值，独立于页面滚动 -->
+    <!-- 底部悬浮状态条：图标 + 数字，实时显示运行/排队/速度/峰值；齿轮可设并发数。独立于页面滚动 -->
     <div class="status-dock" id="statusDock" role="status" aria-live="polite">
-        <span class="status-dock-item" title="正在下载/合并的任务数">
+        <span class="status-dock-item" title="正在下载/合并/转换的任务数 / 并发上限">
             <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></span>
-            <span>运行</span>
             <span class="num" id="dockActive">0</span><span style="color:var(--muted);font-weight:500;">/</span><span class="num idle" id="dockMax">0</span>
         </span>
         <span class="status-dock-item" title="排队中尚未开始的任务数">
             <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg></span>
-            <span>排队</span>
             <span class="num idle" id="dockQueued">0</span>
         </span>
         <span class="status-dock-item" title="所有任务合计的当前下载速度（30s 滑动窗口）">
             <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></span>
-            <span>速度</span>
             <span class="num" id="dockSpeed">0 B/s</span>
         </span>
         <span class="status-dock-item" title="本进程启动以来的最高瞬时速度">
             <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></span>
-            <span>峰值</span>
             <span class="num peak" id="dockPeak">0 B/s</span>
         </span>
+        <button type="button" class="status-dock-item dock-settings" id="dockSettings" title="设置并发任务数" onclick="openMpModal()">
+            <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></span>
+        </button>
+    </div>
+
+    <!-- 并发数设置弹窗 -->
+    <div id="mpModal" class="modal">
+        <div class="modal-content">
+            <span class="close-btn" onclick="closeMpModal()">&times;</span>
+            <h3 style="margin-top:0; padding-bottom:12px; border-bottom:1px solid var(--border); font-size:15px; font-weight:650;">并发任务数</h3>
+            <p style="color:var(--faint); font-size:12.5px; line-height:1.5; margin:10px 0 14px;">同时运行的最大任务数（下载 / 合并 / 音频转换共用），修改后立即生效并持久化保存。</p>
+            <label style="font-size:12.5px; font-weight:600; color:var(--muted);">最大并发数</label>
+            <input type="number" id="mpInput" min="1" max="99" step="1" value="3" style="width:100%; box-sizing:border-box; margin-top:6px;">
+            <div style="display:flex; gap:10px; margin-top:16px;">
+                <button type="button" class="btn-main" id="mpSave" style="flex:1;">保存</button>
+                <button type="button" class="btn-secondary" id="mpCancel" style="flex:1;" onclick="closeMpModal()">取消</button>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -1164,7 +1186,44 @@
 
         window.onclick = function(event) {
             if (event.target == document.getElementById('folderModal')) closeFolderModal();
+            if (event.target == document.getElementById('mpModal')) closeMpModal();
         }
+
+        // ============ 并发数设置 ============
+        function openMpModal() {
+            document.getElementById('mpInput').value = document.getElementById('dockMax').textContent || 3;
+            document.getElementById('mpModal').style.display = 'block';
+            setTimeout(() => document.getElementById('mpInput').focus(), 0);
+        }
+        function closeMpModal() {
+            document.getElementById('mpModal').style.display = 'none';
+        }
+        async function saveMaxParallel() {
+            const input = document.getElementById('mpInput');
+            const v = parseInt(input.value, 10);
+            if (!v || v < 1) { showToast('请输入不小于 1 的整数', 'error'); return; }
+            if (v > 99) { showToast('并发数过大，最大 99', 'error'); return; }
+            const saveBtn = document.getElementById('mpSave');
+            saveBtn.disabled = true;
+            try {
+                await apiFetch('/api/max_parallel', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ value: v })
+                });
+                closeMpModal();
+                refreshStats();
+                showToast(`并发数已设为 ${v}`);
+            } catch (err) {
+                showToast(err.message || '保存失败', 'error');
+            } finally {
+                saveBtn.disabled = false;
+            }
+        }
+        document.getElementById('mpSave').onclick = saveMaxParallel;
+        document.getElementById('mpInput').addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') { e.preventDefault(); saveMaxParallel(); }
+        });
 
         function getProgress(log) {
             if (!log) return { percent: 0, text: '' };
